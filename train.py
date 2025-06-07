@@ -205,7 +205,7 @@ if use_baseline_model:
     from model_baseline import GPTConfig, GPT
 else:
     print("Using standard model from model.py")
-    from model import GPTConfig, GPT
+    from model import GPTConfig, GPT, LoopConfig
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -290,16 +290,27 @@ if use_baseline_model:
     # if it was somehow added before (e.g. from a previous non-baseline configuration attempt)
     model_args.pop('effective_n_layer', None) 
 else:
+    # Create LoopConfig from individual parameters
+    loop_cfg = LoopConfig(
+        max_loops=globals().get('loop_max_loops', globals().get('max_loops', 5)),
+        noise_scale=globals().get('loop_noise_scale', 1.0),
+        concat_init=globals().get('loop_concat_init', globals().get('concatenate_initial_representation', True)),
+        auto_exit=globals().get('loop_auto_exit', globals().get('automatic_loop_exit', False)),
+        auto_exit_eps=globals().get('loop_auto_exit_eps', globals().get('automatic_loop_exit_threshold', 0.01))
+    )
+    
     model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                     bias=bias, vocab_size=None, dropout=dropout,
-                    # Include looping parameters, which might be overridden by command line via configurator
-                    max_loops=globals().get('max_loops', 30), # Ensure it's fetched if set by configurator
-                    loop_groups=globals().get('loop_groups', None),
-                    loop_counts=globals().get('loop_counts', None),
-                    loop_noise_scale=globals().get('loop_noise_scale', 0.0),
-                    concatenate_initial_representation=globals().get('concatenate_initial_representation', True),
-                    loops_representation=globals().get('loops_representation', False),
-                    effective_n_layer=None # Placeholder, will be calculated below
+                    # New loop hierarchy configuration
+                    hierarchical_spec=globals().get('hierarchical_spec', None),
+                    loop_cfg=loop_cfg,
+                    # Legacy parameters for backward compatibility
+                    order1_groups=globals().get('order1_groups', None),
+                    max_loops=loop_cfg.max_loops,
+                    loop_noise_scale=loop_cfg.noise_scale,
+                    concatenate_initial_representation=loop_cfg.concat_init,
+                    automatic_loop_exit=loop_cfg.auto_exit,
+                    automatic_loop_exit_threshold=loop_cfg.auto_exit_eps
                     )
 
 if init_from == 'scratch':
@@ -309,38 +320,15 @@ if init_from == 'scratch':
     if meta_vocab_size is None:
         print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
     model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
-    # Set default loop_groups if not provided and initializing from scratch
-    if model_args.get('loop_groups') is None and not use_baseline_model:    
+    
+    # Set default hierarchical_spec if not provided and initializing from scratch
+    if model_args.get('hierarchical_spec') is None and not use_baseline_model:    
         if n_layer % 2 == 1: # Odd number of layers
-            default_group = [[n_layer // 2]]
+            default_spec = [[n_layer // 2]]
         else: # Even number of layers
-            default_group = [[(n_layer // 2) - 1]]
-        print(f"Defaulting loop_groups to: {default_group} for {n_layer} layers.")
-        model_args['loop_groups'] = default_group
-        # If loop_groups was defaulted, and loop_counts is None, it will naturally use max_loops for this default group.
-
-    # Calculate effective_n_layer
-    if not use_baseline_model:
-        current_n_layer = model_args['n_layer']
-        current_loop_groups = model_args.get('loop_groups')
-        current_max_loops = model_args.get('max_loops', 30) # Default to 30 if not found
-
-        effective_n_layer_val = float(current_n_layer)
-        if current_loop_groups and current_max_loops > 1: # Only add if there are groups and actual looping possibility
-            # Expected number of loops for a group when sampling uniformly from 1 to max_loops
-            # is (1 + max_loops) / 2.
-            # The additional iterations beyond the first pass are ((1 + max_loops) / 2) - 1.
-            expected_additional_loops_per_group = ((1 + float(current_max_loops)) / 2.0) - 1.0
-            if expected_additional_loops_per_group > 0: # only add if it's positive
-                for group in current_loop_groups:
-                    effective_n_layer_val += len(group) * expected_additional_loops_per_group
-        
-        model_args['effective_n_layer'] = effective_n_layer_val
-        print(f"Calculated effective_n_layer: {effective_n_layer_val}")
-    else:
-        # For baseline model, effective_n_layer is not added to model_args.
-        # model_args['effective_n_layer'] = float(model_args['n_layer']) # This line was causing the issue
-        print(f"Baseline model using n_layer: {model_args['n_layer']}. 'effective_n_layer' not passed to GPTConfig.")
+            default_spec = [[(n_layer // 2) - 1]]
+        print(f"Defaulting hierarchical_spec to: {default_spec} for {n_layer} layers.")
+        model_args['hierarchical_spec'] = default_spec
 
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
@@ -374,7 +362,7 @@ elif init_from == 'resume':
             # For now, let's try to use the checkpoint's n_layer as a fallback.
             resumed_n_layer = checkpoint_model_args.get('n_layer', n_layer)
             # Attempt to re-calculate if looping params are in checkpoint_model_args
-            resumed_loop_groups = checkpoint_model_args.get('loop_groups', model_args.get('loop_groups'))
+            resumed_loop_groups = checkpoint_model_args.get('order1_groups', model_args.get('order1_groups'))
             resumed_max_loops = checkpoint_model_args.get('max_loops', model_args.get('max_loops', 30))
             
             effective_n_layer_val_resume = float(resumed_n_layer)
@@ -508,16 +496,9 @@ def estimate_loss(fixed_loops_override=None, custom_eval_iters=None,
     model.eval()
 
     current_model_config = raw_model.config
-    is_looping_model = not use_baseline_model and hasattr(current_model_config, 'loop_groups') and current_model_config.loop_groups
+    is_looping_model = not use_baseline_model and hasattr(current_model_config, 'order1_groups') and current_model_config.order1_groups
 
     # --- Store original states to be restored ---
-    original_sampled_group_loop_counts = None
-    if is_looping_model and hasattr(current_model_config, 'sampled_group_loop_counts'):
-        if current_model_config.sampled_group_loop_counts is not None:
-            original_sampled_group_loop_counts = list(current_model_config.sampled_group_loop_counts)
-        else:
-            original_sampled_group_loop_counts = None
-
     original_auto_exit_enabled = None
     original_auto_exit_threshold = None
     if is_looping_model: # Only relevant for looping models
@@ -532,20 +513,18 @@ def estimate_loss(fixed_loops_override=None, custom_eval_iters=None,
         
         # If fixed_loops_override is also set, it means we want auto-exit on a fixed number of max loops.
         if fixed_loops_override is not None:
-            # print("Warning: eval_auto_exit is True and fixed_loops_override is set. Auto-exit will apply to the fixed number of loops.")
-            if hasattr(current_model_config, 'loop_groups') and current_model_config.loop_groups: # Ensure loop_groups exists
-                num_groups = len(current_model_config.loop_groups)
-                current_model_config.sampled_group_loop_counts = [fixed_loops_override] * num_groups
-            else: # Should not happen if is_looping_model is true, but as a safeguard
-                fixed_loops_override = None # Cannot apply if no groups
+            # For new system, override the loop_cfg max_loops temporarily
+            original_max_loops = current_model_config.loop_cfg.max_loops
+            current_model_config.loop_cfg.max_loops = fixed_loops_override
+        else:
+            original_max_loops = None
 
     elif fixed_loops_override is not None and is_looping_model: # `elif` ensures this is exclusive if eval_auto_exit is False
-        if hasattr(current_model_config, 'loop_groups') and current_model_config.loop_groups: # Ensure loop_groups exists
-            num_groups = len(current_model_config.loop_groups)
-            current_model_config.sampled_group_loop_counts = [fixed_loops_override] * num_groups
-        else: # Should not happen if is_looping_model is true, but as a safeguard
-            fixed_loops_override = None # Cannot apply if no groups
-
+        # For new system, override the loop_cfg max_loops temporarily
+        original_max_loops = current_model_config.loop_cfg.max_loops
+        current_model_config.loop_cfg.max_loops = fixed_loops_override
+    else:
+        original_max_loops = None
 
     iters_to_run = custom_eval_iters if custom_eval_iters is not None else eval_iters
     try:
@@ -567,10 +546,9 @@ def estimate_loss(fixed_loops_override=None, custom_eval_iters=None,
                 if original_auto_exit_threshold is not None:
                     current_model_config.automatic_loop_exit_threshold = original_auto_exit_threshold
             
-            # Restore sampled_group_loop_counts if it was modified by fixed_loops_override
-            # This covers cases where fixed_loops_override was set directly or in conjunction with eval_auto_exit.
-            if fixed_loops_override is not None and hasattr(current_model_config, 'loop_groups') and current_model_config.loop_groups:
-                 current_model_config.sampled_group_loop_counts = original_sampled_group_loop_counts
+            # Restore original max_loops if it was modified
+            if original_max_loops is not None:
+                current_model_config.loop_cfg.max_loops = original_max_loops
 
     model.train()
     return out
@@ -633,7 +611,7 @@ while True:
         cycle_log_metrics["mfu"] = running_mfu*100 # convert to percentage
         
         # Additional evaluation for fixed loop counts
-        if not use_baseline_model and hasattr(raw_model.config, 'loop_groups') and raw_model.config.loop_groups:
+        if not use_baseline_model and hasattr(raw_model.config, 'order1_groups') and raw_model.config.order1_groups:
             fixed_loop_eval_counts = [1, 5, 15, 30]
             # Calculate eval_iters for ~20 examples. batch_size is available in global scope.
             if batch_size > 0:
@@ -694,22 +672,9 @@ while True:
         break
 
     # --- Start: Modified group-specific loop sampling logic ---
-    if not use_baseline_model and hasattr(raw_model.config, 'loop_groups') and raw_model.config.loop_groups:
-        raw_model.config.sampled_group_loop_counts = []
-        # When sampling is active, the number of loops for each group is sampled independently
-        # up to raw_model.config.max_loops. The config.loop_counts array from the configuration
-        # is NOT used to determine the sampling range here; config.loop_counts is intended for
-        # non-sampling scenarios (e.g., baseline model or when no loop_groups are defined).
-        for _ in raw_model.config.loop_groups: # Iterate once per group to sample for each
-            max_loops_for_sampling_this_group = raw_model.config.max_loops
-            
-            if max_loops_for_sampling_this_group > 0:
-                # Sample from 1 to max_loops_for_sampling_this_group (inclusive)
-                sampled_loops = torch.randint(low=1, high=max_loops_for_sampling_this_group + 1, size=(1,)).item()
-            else:
-                # If max_loops is 0 or negative in the config, it implies a single pass (1 loop)
-                sampled_loops = 1
-            raw_model.config.sampled_group_loop_counts.append(sampled_loops)
+    if not use_baseline_model and hasattr(raw_model.config, 'order1_groups') and raw_model.config.order1_groups:
+        # Sample new K values for each group using the new system
+        raw_model.sample_K_values()
     # --- End: Modified group-specific loop sampling logic ---
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size

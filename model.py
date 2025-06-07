@@ -10,10 +10,20 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 import math
 import inspect
 from dataclasses import dataclass
+from typing import List, Optional, Union
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+
+@dataclass
+class LoopConfig:
+    """Configuration for loop behavior in a Group."""
+    max_loops: int = 1
+    noise_scale: float = 1.0
+    concat_init: bool = True
+    auto_exit: bool = False
+    auto_exit_eps: float = 0.001
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
@@ -125,6 +135,186 @@ class Block(nn.Module):
         x = x + mlp_output_normalized
         return x
 
+class HierarchicalGroup(nn.Module):
+    """A hierarchical group that can contain Blocks or other HierarchicalGroups."""
+    
+    def __init__(self, name: str, order: int, loop_cfg: LoopConfig, n_embd: int):
+        super().__init__()
+        self.name = name
+        self.order = order  # Depth of the group in the hierarchy, starting from 1
+        self.loop_cfg = loop_cfg
+        self.n_embd = n_embd
+        self.child_modules = nn.ModuleList()
+        
+        # Create adapter if concatenation is enabled
+        if loop_cfg.concat_init:
+            self.adapter = nn.Linear(2 * n_embd, n_embd)
+        else:
+            self.adapter = None
+    
+    def add_child(self, child: Union['HierarchicalGroup', 'Block']):
+        """Add a child Block or HierarchicalGroup to this group."""
+        self.child_modules.append(child)
+    
+    def forward(self, x: torch.Tensor, K: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Forward pass through this hierarchical group with dynamic looping."""
+        if K is None:
+            K = torch.tensor(self.loop_cfg.max_loops, device=x.device, dtype=torch.long)
+        elif not isinstance(K, torch.Tensor):
+            K = torch.tensor(K, device=x.device, dtype=torch.long)
+        
+        # If K is 1, skip the loop overhead and just process children once
+        if K.item() == 1:
+            return self._process_children_once(x)
+        
+        # Multi-iteration processing with loop semantics
+        return self._loop_process(x, K)
+    
+    def _process_children_once(self, x: torch.Tensor) -> torch.Tensor:
+        """Process all children exactly once."""
+        x_input = x
+        
+        # Apply concatenation/adaptation if needed for single pass
+        if self.loop_cfg.concat_init:
+            x_input = torch.cat([x, x], dim=-1)
+            x_input = self.adapter(x_input)
+        
+        # Process all children in order
+        for child in self.child_modules:
+            x_input = child(x_input)
+        
+        return x_input
+    
+    def _loop_process(self, x: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
+        """Process with looping semantics."""
+        x_orig = x.clone()
+        x_current = x
+        
+        # Pre-compute noise for this level if needed
+        if self.loop_cfg.noise_scale > 0.0:
+            # Scale variance by the order of the group. Deeper group -> larger noise.
+            base_variance = 2.0 / (5 * self.n_embd)
+            variance_noise = base_variance * self.order
+            std_noise = math.sqrt(variance_noise)
+            noise = torch.randn_like(x_orig) * std_noise * self.loop_cfg.noise_scale
+        else:
+            noise = torch.zeros_like(x_orig)
+        
+        K_item = K.item() if isinstance(K, torch.Tensor) else K
+        
+        for iteration in range(K_item):
+            # Prepare input for this iteration
+            if self.loop_cfg.concat_init:
+                if iteration == 0 and K_item > 1 and self.loop_cfg.noise_scale > 0.0:
+                    # First iteration with noise
+                    x_iter_input = torch.cat([x_orig, noise], dim=-1)
+                elif iteration > 0:
+                    # Subsequent iterations: concatenate original with current
+                    x_iter_input = torch.cat([x_orig, x_current], dim=-1)
+                else:
+                    # Single iteration case (shouldn't reach here due to early return)
+                    x_iter_input = torch.cat([x_current, x_current], dim=-1)
+                
+                x_iter_input = self.adapter(x_iter_input)
+            else:
+                if iteration == 0 and K_item > 1 and self.loop_cfg.noise_scale > 0.0:
+                    # First iteration with noise
+                    x_iter_input = x_current + noise
+                elif iteration > 0:
+                    # Subsequent iterations: add original to current
+                    x_iter_input = x_orig + x_current
+                else:
+                    # Single iteration case (shouldn't reach here)
+                    x_iter_input = x_current
+            
+            # Process all children for this iteration
+            for child in self.child_modules:
+                x_iter_input = child(x_iter_input)
+            
+            x_current = x_iter_input
+            
+            # Auto-exit check
+            if self.loop_cfg.auto_exit and K_item > 1 and iteration > 0:
+                diff_norm = torch.norm(x_current - x_orig) / math.sqrt(x.numel())
+                if diff_norm < self.loop_cfg.auto_exit_eps:
+                    break
+        
+        return x_current
+
+class HierarchicalTreeBuilder:
+    """Builder for constructing hierarchical Group trees from nested specifications."""
+    
+    @staticmethod
+    def build_from_nested_spec(nested_spec, n_embd: int, config, base_loop_cfg: LoopConfig) -> HierarchicalGroup:
+        """
+        Build a hierarchical tree from a nested specification.
+        
+        Args:
+            nested_spec: Nested list structure, e.g., [[[0], [1]], [[2, 3]]]
+            n_embd: Embedding dimension
+            config: GPTConfig instance for Block creation
+            base_loop_cfg: Base loop configuration (can be overridden per level)
+        
+        Returns:
+            Root HierarchicalGroup containing the entire hierarchy
+        """
+        # Create all blocks
+        blocks = [Block(config) for _ in range(config.n_layer)]
+        
+        # Create root group
+        root = HierarchicalGroup("root", order=0, loop_cfg=LoopConfig(max_loops=1), n_embd=n_embd)
+        
+        # Build the hierarchy recursively
+        group_counter = [0]  # Use list for mutable counter
+        
+        def build_recursive(spec, parent_name: str, order: int) -> HierarchicalGroup:
+            group_name = f"{parent_name}.g{group_counter[0]}"
+            group_counter[0] += 1
+            
+            # Determine if this is a leaf group (contains only integers)
+            is_leaf = all(isinstance(item, int) for item in spec)
+            
+            if is_leaf:
+                # This is a leaf group containing actual layers
+                group = HierarchicalGroup(group_name, order=order, loop_cfg=base_loop_cfg, n_embd=n_embd)
+                
+                # Validate contiguity
+                if len(spec) > 1:
+                    sorted_spec = sorted(spec)
+                    for i in range(len(sorted_spec) - 1):
+                        if sorted_spec[i+1] != sorted_spec[i] + 1:
+                            raise ValueError(f"Order-1 group {spec} is not contiguous")
+                
+                # Add blocks to this group
+                for layer_idx in sorted(spec):
+                    if layer_idx < 0 or layer_idx >= config.n_layer:
+                        raise ValueError(f"Layer index {layer_idx} out of bounds")
+                    group.add_child(blocks[layer_idx])
+                
+                return group
+            else:
+                # This is a higher-order group containing other groups
+                group = HierarchicalGroup(group_name, order=order, loop_cfg=base_loop_cfg, n_embd=n_embd)
+                
+                for child_spec in spec:
+                    child_group = build_recursive(child_spec, group_name, order + 1)
+                    group.add_child(child_group)
+                
+                return group
+        
+        # Process top-level specification
+        if isinstance(nested_spec[0], int):
+            # Top level is just a flat list of layers
+            root_group = build_recursive(nested_spec, "root", 1)
+            root.add_child(root_group)
+        else:
+            # Top level contains multiple groups
+            for i, top_spec in enumerate(nested_spec):
+                child_group = build_recursive(top_spec, "root", 1)
+                root.add_child(child_group)
+        
+        return root
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -135,16 +325,67 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     
-    # Looping configuration
-    loop_groups: list[list[int]] = None # Defines groups of layer indices to be looped together. E.g., [[0,1],[3]]. If None, default behavior (e.g. innermost layer) is handled by training script.
-    loop_counts: list[int] = None # Number of loops for each group in loop_groups. If None or entry <=0, max_loops is used for that group.
-    loop_noise_scale: float = 1.0 # Scale for Gaussian noise added in the first multi-loop iteration of a group (0.0 means no noise)
-    concatenate_initial_representation: bool = True # Concatenate initial representation before looping, instead of summing to residual stream, and adapt it
-    loops_representation: bool = False # Flag to track and return representations across loops (for debugging/analysis)
+    # New hierarchical loop configuration
+    hierarchical_spec: List = None  # Nested list structure, e.g., [[[0], [1]], [[2, 3]]]
+    loop_cfg: LoopConfig = None  # Loop configuration for all groups
+    
+    # Legacy configuration (deprecated but kept for compatibility)
+    order1_groups: List[List[int]] = None  # Will be converted from hierarchical_spec
+    loop_groups: list[list[int]] = None # Old flat format
+    loop_counts: list[int] = None
+    loop_noise_scale: float = 1.0
+    concatenate_initial_representation: bool = True
+    loops_representation: bool = False
     max_loops: int = 30
-    effective_n_layer: float = None # Effective number of layers considering loops
-    automatic_loop_exit: bool = False # Flag to automatically exit loops based on convergence of representations
-    automatic_loop_exit_threshold: float = 0.01 # Threshold for automatic loop exit
+    effective_n_layer: float = None
+    automatic_loop_exit: bool = False
+    automatic_loop_exit_threshold: float = 0.01
+    
+    def __post_init__(self):
+        """Initialize default loop configuration if not provided."""
+        if self.loop_cfg is None:
+            self.loop_cfg = LoopConfig(
+                max_loops=self.max_loops,
+                noise_scale=self.loop_noise_scale,
+                concat_init=self.concatenate_initial_representation,
+                auto_exit=self.automatic_loop_exit,
+                auto_exit_eps=self.automatic_loop_exit_threshold
+            )
+        
+        # Handle hierarchical specification conversion
+        if self.hierarchical_spec is None:
+            if self.order1_groups is not None:
+                # Convert flat order1_groups to simple hierarchical spec
+                self.hierarchical_spec = self.order1_groups
+            elif self.loop_groups is not None:
+                # Convert legacy loop_groups to hierarchical spec
+                self.hierarchical_spec = self.loop_groups
+            else:
+                # Default: each layer is its own group
+                self.hierarchical_spec = [[i] for i in range(self.n_layer)]
+        
+        # Update order1_groups for backward compatibility
+        self.order1_groups = self.hierarchical_spec
+    
+    def compute_effective_n_layer(self, sampled_Ks: Optional[List[int]] = None) -> float:
+        """Compute effective number of layers considering hierarchical loop structure."""
+        def count_leaves_and_depth(spec, depth=1):
+            """Recursively count leaves and compute expected depth."""
+            if all(isinstance(item, int) for item in spec):
+                # This is a leaf group containing layer indices
+                return len(spec), len(spec) * depth * self.loop_cfg.max_loops
+            else:
+                # This contains subgroups
+                total_leaves = 0
+                total_depth = 0
+                for subgroup in spec:
+                    leaves, sub_depth = count_leaves_and_depth(subgroup, depth + 1)
+                    total_leaves += leaves
+                    total_depth += sub_depth
+                return total_leaves, total_depth
+        
+        _, effective_depth = count_leaves_and_depth(self.hierarchical_spec)
+        return float(effective_depth) 
 
 class GPT(nn.Module):
 
@@ -154,11 +395,19 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
+        # Build the loop hierarchy tree
+        self.tree = HierarchicalTreeBuilder.build_from_nested_spec(
+            nested_spec=config.hierarchical_spec,
+            n_embd=config.n_embd,
+            config=config,
+            base_loop_cfg=config.loop_cfg
+        )
+
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            tree = self.tree,  # Use tree instead of individual layers
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -168,27 +417,14 @@ class GPT(nn.Module):
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
-        self.concatenate_initial_representation = config.concatenate_initial_representation
-        # Store effective_n_layer for initialization
-        # self.effective_n_layer = config.effective_n_layer # Will be available via self.config.effective_n_layer
-
-        if self.concatenate_initial_representation:
-            # Adjust adapter input dimension based on whether noise is added
-            adapter_input_dim = 2 * self.config.n_embd if self.config.loop_noise_scale > 0.0 else self.config.n_embd
-            self.initial_representation_adapter = nn.Linear(adapter_input_dim, self.config.n_embd)
-            # Note: If noise is added, the first iteration uses 2*n_embd, subsequent iterations use n_embd + n_embd = 2*n_embd.
-            # If no noise, the first iteration uses n_embd, subsequent use n_embd + n_embd = 2*n_embd.
-            # A single adapter might be insufficient. Let's refine this logic later if needed.
-            # For now, let's assume the adapter handles 2*n_embd, and we adjust the first iteration input if no noise.
-            self.initial_representation_adapter = nn.Linear(2 * self.config.n_embd, self.config.n_embd)
+        # Compute effective_n_layer for initialization
+        self.effective_n_layer = config.compute_effective_n_layer()
+        
+        # Sample K values for each group outside the compiled graph
+        self.sampled_K_tensor = None
 
         # init all weights
         self.apply(self._init_weights)
-        # apply special scaled init to the residual projections, per GPT-2 paper
-        # for pn, p in self.named_parameters():
-        #     if pn.endswith('c_proj.weight'):
-        #         torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
-        # The above loop is removed as requested, c_proj.weight will be handled by _init_weights
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
@@ -209,12 +445,11 @@ class GPT(nn.Module):
         if isinstance(module, nn.Linear):
             if module is self.lm_head:
                 # Variance for lm_head: 1 / (5 * n_embd * effective_n_layer)
-                if self.config.effective_n_layer is not None and self.config.effective_n_layer > 0:
-                    variance = 1.0 / (5 * self.config.n_embd * self.config.effective_n_layer)
+                if hasattr(self, 'effective_n_layer') and self.effective_n_layer > 0:
+                    variance = 1.0 / (5 * self.config.n_embd * self.effective_n_layer)
                 else:
-                    # Fallback if effective_n_layer is not available or invalid (e.g. during from_pretrained without this field)
-                    # Using a small default variance, similar to original 0.02 std for general layers
-                    variance = (0.02**2) / self.config.n_layer # Heuristic, adjust if needed
+                    # Fallback if effective_n_layer is not available
+                    variance = (0.02**2) / self.config.n_layer
                     print(f"Warning: effective_n_layer not available for lm_head init. Using fallback variance {variance}")
 
                 std = math.sqrt(variance)
@@ -247,143 +482,18 @@ class GPT(nn.Module):
         x = (tok_emb + pos_emb) * math.sqrt(self.config.n_embd)
         x = self.transformer.drop(x)
 
-        loop_representations = [] if self.config.loops_representation else None
-        
-        processed_in_loop_group = [False] * self.config.n_layer
+        # Sample K values for each group outside the compiled graph
+        if self.sampled_K_tensor is None or not self.training:
+            # Sample new K values for each group
+            num_groups = len(self.config.order1_groups)
+            sampled_Ks = []
+            for _ in range(num_groups):
+                # For now, use max_loops. Later this can be made dynamic
+                sampled_Ks.append(self.config.loop_cfg.max_loops)
+            self.sampled_K_tensor = torch.tensor(sampled_Ks, device=device)
 
-        current_layer_idx = 0
-        while current_layer_idx < self.config.n_layer:
-            if processed_in_loop_group[current_layer_idx]:
-                current_layer_idx += 1
-                continue
-
-            current_group_indices = None
-            is_part_of_defined_group = False
-            num_loops_for_this_group = 1 # Default to 1 pass (no actual looping)
-
-            if self.config.loop_groups:
-                for group_config_idx, group in enumerate(self.config.loop_groups):
-                    if group and current_layer_idx == group[0]: # Check if current layer is the start of this group
-                        # Validate group indices
-                        assert all(0 <= idx < self.config.n_layer for idx in group), f"Invalid layer index in group {group}"
-                        assert all(group[i] < group[i+1] for i in range(len(group)-1)), f"Layer indices in a group must be sorted and unique: {group}"
-                        current_group_indices = group
-                        is_part_of_defined_group = True
-
-                        # Determine the number of loops for this specific group
-                        if hasattr(self.config, 'sampled_group_loop_counts') and self.config.sampled_group_loop_counts and group_config_idx < len(self.config.sampled_group_loop_counts):
-                            num_loops_for_this_group = self.config.sampled_group_loop_counts[group_config_idx]
-                        else:
-                            # Fallback to original logic if sampled counts are not available
-                            num_loops_for_this_group = self.config.max_loops # Start with global max_loops
-                            if self.config.loop_counts and group_config_idx < len(self.config.loop_counts):
-                                count_val = self.config.loop_counts[group_config_idx]
-                                if count_val > 0:
-                                    num_loops_for_this_group = count_val
-                                else: # If loop_counts specifies <= 0, it means 1 pass for this group
-                                    num_loops_for_this_group = 1 
-                            elif not self.config.loop_counts: # If loop_counts is None, all groups use max_loops
-                                pass # num_loops_for_this_group is already max_loops
-                            else: # loop_counts is provided, but this group_config_idx is out of bounds
-                                pass 
-                        break 
-            
-            if is_part_of_defined_group: # current_group_indices will be set
-               # print(f"Processing group {current_group_indices} with {num_loops_for_this_group} iteration(s).")
-                
-                for i in current_group_indices:
-                    processed_in_loop_group[i] = True
-
-                x_original_group_input = x.clone()
-                current_loop_iteration_input = x_original_group_input
-                prev_diff_norm_for_group = None # For automatic loop exit calculation
-
-                for loop_iter_idx in range(num_loops_for_this_group):
-                    x_pass_input = current_loop_iteration_input
-
-                    # Apply noise ONLY if actually looping (num_loops > 1) and it's the first iteration
-                    if num_loops_for_this_group > 1 and loop_iter_idx == 0 and self.config.loop_noise_scale > 0.0:
-                        # noise = torch.randn_like(x_pass_input) * self.config.loop_noise_scale
-                        # New noise initialization with specified variance
-                        variance_noise = 2.0 / (5 * self.config.n_embd)
-                        std_noise = math.sqrt(variance_noise)
-                        noise = torch.randn_like(x_pass_input) * std_noise * self.config.loop_noise_scale
-                        
-                        if self.concatenate_initial_representation:
-                            x_pass_input = torch.cat([x_original_group_input, noise], dim=-1)
-                        else:
-                            x_pass_input = x_pass_input + noise
-                    # Adapt residual for subsequent multi-loop iterations
-                    elif num_loops_for_this_group > 1 and loop_iter_idx > 0:
-                        if self.concatenate_initial_representation:
-                            x_pass_input = torch.cat([x_original_group_input, x_pass_input], dim=-1) # x_pass_input is previous loop's output
-                        else:
-                            x_pass_input = x_original_group_input + x_pass_input # x_pass_input is previous loop's output
-                    
-                    # Adapt dimensionality if concatenation is on
-                    needs_adapter = False
-                    if self.concatenate_initial_representation:
-                        # Case 1: Single effective pass (num_loops_for_this_group == 1). No noise applied above.
-                        # We duplicate input to match adapter's 2*n_embd expectation.
-                        if num_loops_for_this_group == 1:
-                             x_pass_input = torch.cat([x_pass_input, x_pass_input], dim=-1)
-                             needs_adapter = True
-                        # Case 2: Multi-loop (num_loops_for_this_group > 1)
-                        elif num_loops_for_this_group > 1:
-                            if loop_iter_idx == 0 and self.config.loop_noise_scale == 0.0: # First multi-loop iter, no noise
-                                x_pass_input = torch.cat([x_pass_input, x_pass_input], dim=-1)
-                                needs_adapter = True
-                            elif loop_iter_idx > 0 or (loop_iter_idx == 0 and self.config.loop_noise_scale > 0.0): # Subsequent or first-with-noise
-                                needs_adapter = True 
-                    
-                    if needs_adapter:
-                        x_pass_input = self.initial_representation_adapter(x_pass_input)
-
-                    # --- Pass through the layers in the current group ---
-                    x_input_to_group_layers_this_iter = x_pass_input.clone() # For diff calculation
-                    x_intermediate_in_group = x_pass_input
-                    for layer_idx_in_group in current_group_indices:
-                        x_intermediate_in_group = self.transformer.h[layer_idx_in_group](x_intermediate_in_group)
-                    x_group_output_this_iter = x_intermediate_in_group
-                    # --- End Group Pass ---
-                    
-                    current_loop_iteration_input = x_group_output_this_iter # Update before potential break
-
-                    if self.config.loops_representation: # Store representation ONLY from within an active loop group iteration
-                        loop_representations.append(current_loop_iteration_input.clone())
-
-                    # Automatic loop exit logic
-                    if self.config.automatic_loop_exit and num_loops_for_this_group > 1 and b == 1:
-                        # Calculate L2 norm of (output - input) for the current group pass,
-                        # then mean over sequence and batch for a scalar.
-                        current_iter_change_norm_tensor = torch.norm(x_group_output_this_iter - x_input_to_group_layers_this_iter, p=2, dim=-1) # (B, T)
-                        current_iter_change_norm = current_iter_change_norm_tensor.mean(dim=-1) # Scalar
-
-                        if prev_diff_norm_for_group is not None and loop_iter_idx > 0: # Need at least two norms to compare
-                            diff_of_diffs = torch.abs(current_iter_change_norm - prev_diff_norm_for_group)
-                            if diff_of_diffs < self.config.automatic_loop_exit_threshold:
-                                # print(f"DEBUG: Auto exiting loop for group {current_group_indices} at iter {loop_iter_idx+1}/{num_loops_for_this_group}. Diff of diffs: {diff_of_diffs.item()}")
-                                break # Exit this group's loop
-                        
-                        prev_diff_norm_for_group = current_iter_change_norm
-                    elif self.config.automatic_loop_exit and num_loops_for_this_group > 1 and b > 1:
-                        if loop_iter_idx == 0: # Print warning only once per group if condition met
-                            print(f"Warning: Batch size ({b}) > 1. Automatic loop exit is disabled for group {current_group_indices} to prevent potential tensor ambiguity. Loop will run for {num_loops_for_this_group} iterations.")
-                    
-                    # No automatic exit, loop runs for num_loops_for_this_group iterations
-                    # The standard for loop handles exit if not broken early.
-                    # if loop_iter_idx == num_loops_for_this_group - 1:
-                    #    break # This is redundant due to the for loop's natural termination
-                
-                x = current_loop_iteration_input # Final output after all iterations (or early exit) for this group
-                current_layer_idx = current_group_indices[-1] + 1
-            
-            else:
-                # --- Normal Processing for a single layer (not in a defined group or loop_groups is None) ---
-                x = self.transformer.h[current_layer_idx](x)
-                # if self.config.loops_representation: # Removed: No longer collect reps for single-pass non-grouped layers
-                #     loop_representations.append(x.clone())
-                current_layer_idx += 1
+        # Forward through the tree hierarchy
+        x = self._forward_tree(x, self.transformer.tree, self.sampled_K_tensor, 0)
         
         x = self.transformer.ln_f(x)
 
@@ -396,10 +506,25 @@ class GPT(nn.Module):
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        if self.config.loops_representation:
-            return logits, loss, loop_representations
+        return logits, loss
+    
+    def _forward_tree(self, x: torch.Tensor, group: HierarchicalGroup, sampled_K_tensor: torch.Tensor, group_idx: int) -> torch.Tensor:
+        """Recursively forward through the tree hierarchy."""
+        if group.name == "root":
+            # Root group: forward through all children
+            child_idx = 0
+            for child in group.child_modules:
+                if isinstance(child, HierarchicalGroup):
+                    x = self._forward_tree(x, child, sampled_K_tensor, child_idx)
+                    child_idx += 1
+                else:
+                    # Direct Block child (shouldn't happen in new design, but handle gracefully)
+                    x = child(x)
+            return x
         else:
-            return logits, loss
+            # Regular group: forward with appropriate K value
+            K = sampled_K_tensor[group_idx] if group_idx < len(sampled_K_tensor) else torch.tensor(1, device=x.device)
+            return group(x, K)
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
@@ -408,9 +533,15 @@ class GPT(nn.Module):
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
         self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
-        for block in self.transformer.h:
-            if hasattr(block.attn, 'bias'):
-                block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
+        self._crop_attention_bias_recursive(self.transformer.tree, block_size)
+    
+    def _crop_attention_bias_recursive(self, group: HierarchicalGroup, block_size: int):
+        """Recursively crop attention bias in all blocks within the tree."""
+        for child in group.child_modules:
+            if isinstance(child, HierarchicalGroup):
+                self._crop_attention_bias_recursive(child, block_size)
+            elif hasattr(child, 'attn') and hasattr(child.attn, 'bias'):
+                child.attn.bias = child.attn.bias[:,:,:block_size,:block_size]
 
     @classmethod
     def from_pretrained(cls, model_type, override_args=None):
@@ -512,49 +643,18 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, return_first_step_loop_reps=False):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
-        If return_first_step_loop_reps is True and config.loops_representation is True,
-        this will also return the loop representations from the very first forward pass used for generation.
         """
-        first_step_loop_reps_collected = None
-        initial_call_for_reps = True # Flag to capture reps only on the first meaningful call
-
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             
-            current_loop_reps_for_this_step = None # Initialize for this iteration
             # forward the model to get the logits for the index in the sequence
-            if self.config.loops_representation:
-                output_from_forward = self(idx_cond)
-                # Ensure output_from_forward is a tuple and has 3 elements as expected
-                if isinstance(output_from_forward, tuple) and len(output_from_forward) == 3:
-                    logits, _, current_loop_reps_for_this_step = output_from_forward
-                else:
-                    # This case should ideally not be reached if config.loops_representation is True
-                    # and the model's forward pass behaves as expected.
-                    print("Warning: GPT.forward() did not return 3 values (logits, loss, loop_reps) even though config.loops_representation is True.")
-                    # Attempt to gracefully handle cases where only (logits, loss) or just logits are returned.
-                    if isinstance(output_from_forward, tuple) and len(output_from_forward) >= 1:
-                        logits = output_from_forward[0]
-                    else: # If it's just a tensor (logits)
-                        logits = output_from_forward
-                    # current_loop_reps_for_this_step remains None
-            else: # If loops_representation is False
-                output_from_forward = self(idx_cond)
-                if isinstance(output_from_forward, tuple) and len(output_from_forward) >= 1:
-                    logits = output_from_forward[0]
-                else:
-                    logits = output_from_forward
-                # current_loop_reps_for_this_step remains None
-            
-            if return_first_step_loop_reps and initial_call_for_reps and current_loop_reps_for_this_step is not None:
-                first_step_loop_reps_collected = current_loop_reps_for_this_step
-                initial_call_for_reps = False # Avoid re-capturing on subsequent generation steps
+            logits, _ = self(idx_cond)
             
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
@@ -569,9 +669,29 @@ class GPT(nn.Module):
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
-        # If max_new_tokens is 0, the loop doesn't run, and first_step_loop_reps_collected remains None.
-        # This is acceptable; representations are tied to a generation step.
-        if return_first_step_loop_reps:
-            return idx, first_step_loop_reps_collected
-        else:
-            return idx
+        return idx
+
+    def sample_K_values(self, device=None):
+        """Sample K values for each group outside the compiled graph."""
+        if device is None:
+            device = next(self.parameters()).device
+        
+        num_groups = len(self.config.order1_groups)
+        sampled_Ks = []
+        for _ in range(num_groups):
+            # For now, use max_loops. Later this can be made dynamic/stochastic
+            sampled_Ks.append(self.config.loop_cfg.max_loops)
+        
+        self.sampled_K_tensor = torch.tensor(sampled_Ks, device=device)
+        return self.sampled_K_tensor
+    
+    def configure_for_compilation(self):
+        """Configure the model for torch.compile compatibility."""
+        # Pre-sample K values to avoid dynamic sampling in compiled graph
+        self.sample_K_values()
+        
+        # Set to eval mode for compilation (can be changed back later)
+        self.eval()
+        
+        print(f"Model configured for compilation with K values: {self.sampled_K_tensor.tolist()}")
+        return self
