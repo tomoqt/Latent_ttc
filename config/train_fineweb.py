@@ -1,5 +1,3 @@
-
-
 wandb_log = True
 wandb_project = 'fineweb-looped-small'
 wandb_run_name='looped-small'
@@ -30,7 +28,12 @@ muon_ns_steps = 5
 
 # Looping configurations
 max_loops = 15
-loop_groups = [[1],[2],[3]] # Example: loop layers 2 and 3 (0-indexed)
-loop_noise_scale = 1.0
+loop_groups = [[1],[2],[3]] 
+
+loop_noise_scale = 1.0 # Add scaled noise to the first iteration of a looped group
 concatenate_initial_representation = True
-loops_representation = False # For debugging/analysis
+loops_representation = False
+automatic_loop_exit=False
+automatic_loop_exit_threshold=0.001
+spectral_clip_beta = 5.0 # beta for spectral clipping, 0.0 to disable
+
