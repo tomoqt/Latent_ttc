@@ -35,5 +35,5 @@ concatenate_initial_representation = True
 loops_representation = False
 automatic_loop_exit=False
 automatic_loop_exit_threshold=0.001
-spectral_clip_beta = 5.0 # beta for spectral clipping, 0.0 to disable
+spectral_clip_beta = 0.9 # beta for spectral clipping, 0.0 to disable
 
