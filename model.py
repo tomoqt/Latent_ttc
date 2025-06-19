@@ -10,6 +10,7 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 import math
 import inspect
 from dataclasses import dataclass
+from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
@@ -145,6 +146,7 @@ class GPTConfig:
     effective_n_layer: float = None # Effective number of layers considering loops
     automatic_loop_exit: bool = False # Flag to automatically exit loops based on convergence of representations
     automatic_loop_exit_threshold: float = 0.01 # Threshold for automatic loop exit
+    backprop_last_k: int = 0  # if >0 only the last k loop iterations are used for backprop
 
 class GPT(nn.Module):
 
@@ -297,6 +299,9 @@ class GPT(nn.Module):
                 x_original_group_input = x.clone()
                 current_loop_iteration_input = x_original_group_input
                 prev_diff_norm_for_group = None # For automatic loop exit calculation
+                backprop_start_iter = 0
+                if self.config.backprop_last_k > 0:
+                    backprop_start_iter = max(num_loops_for_this_group - self.config.backprop_last_k, 0)
 
                 for loop_iter_idx in range(num_loops_for_this_group):
                     x_pass_input = current_loop_iteration_input
@@ -340,11 +345,13 @@ class GPT(nn.Module):
                         x_pass_input = self.initial_representation_adapter(x_pass_input)
 
                     # --- Pass through the layers in the current group ---
-                    x_input_to_group_layers_this_iter = x_pass_input.clone() # For diff calculation
-                    x_intermediate_in_group = x_pass_input
-                    for layer_idx_in_group in current_group_indices:
-                        x_intermediate_in_group = self.transformer.h[layer_idx_in_group](x_intermediate_in_group)
-                    x_group_output_this_iter = x_intermediate_in_group
+                    grad_ctx = nullcontext() if loop_iter_idx >= backprop_start_iter else torch.no_grad()
+                    with grad_ctx:
+                        x_input_to_group_layers_this_iter = x_pass_input.clone() # For diff calculation
+                        x_intermediate_in_group = x_pass_input
+                        for layer_idx_in_group in current_group_indices:
+                            x_intermediate_in_group = self.transformer.h[layer_idx_in_group](x_intermediate_in_group)
+                        x_group_output_this_iter = x_intermediate_in_group
                     # --- End Group Pass ---
                     
                     current_loop_iteration_input = x_group_output_this_iter # Update before potential break
