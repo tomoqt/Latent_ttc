@@ -146,7 +146,7 @@ class GPTConfig:
     effective_n_layer: float = None # Effective number of layers considering loops
     automatic_loop_exit: bool = False # Flag to automatically exit loops based on convergence of representations
     automatic_loop_exit_threshold: float = 0.01 # Threshold for automatic loop exit
-    backprop_last_k: int = 0  # if >0 only the last k loop iterations are used for backprop
+    backprop_last_k: int = 8  # if >0 only the last k loop iterations are used for backprop
 
 class GPT(nn.Module):
 
