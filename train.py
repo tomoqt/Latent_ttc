@@ -189,6 +189,9 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 # loop_groups = None # Will be defaulted below if init_from == 'scratch' and not set
 # loop_counts = None
 enable_auto_exit_eval = False # Whether to run automatic loop exit evaluation
+# loop sampling distribution options
+loop_sampling_strategy = 'log_poisson'  # Options: 'uniform', 'log_poisson'
+loop_sampling_rbar = None  # Targeted mean loops for the Poisson component (before the +1 shift). If None, a heuristic value will be used.
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str, type(None)))] # Added type(None) to catch loop_groups/counts if they are initially None
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -413,6 +416,15 @@ if block_size < model.config.block_size:
     model.crop_block_size(block_size)
     model_args['block_size'] = block_size # so that the checkpoint will have the right value
 model.to(device)
+
+# -----------------------------------------------------------------------------
+# Attach loop sampling configuration to the model's config so it can be used
+# during training without having to expand the GPTConfig dataclass.
+# These attributes can still be overridden at runtime via the configurator
+# by passing, e.g.,  --loop_sampling_strategy=log_poisson
+# -----------------------------------------------------------------------------
+model.config.loop_sampling_strategy = globals().get('loop_sampling_strategy', 'uniform')
+model.config.loop_sampling_rbar = globals().get('loop_sampling_rbar', None)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
@@ -703,12 +715,34 @@ while True:
         for _ in raw_model.config.loop_groups: # Iterate once per group to sample for each
             max_loops_for_sampling_this_group = raw_model.config.max_loops
             
-            if max_loops_for_sampling_this_group > 0:
-                # Sample from 1 to max_loops_for_sampling_this_group (inclusive)
-                sampled_loops = torch.randint(low=1, high=max_loops_for_sampling_this_group + 1, size=(1,)).item()
-            else:
-                # If max_loops is 0 or negative in the config, it implies a single pass (1 loop)
-                sampled_loops = 1
+            sampling_strategy = getattr(raw_model.config, 'loop_sampling_strategy', 'uniform')
+
+            if sampling_strategy == 'log_poisson':
+                # Log-normal Poisson sampling as described in https://arxiv.org/pdf/2502.05171
+                # Parameters
+                sigma = 0.5  #
+
+                # Determine the target Poisson mean (r̄). If not provided, fall back to ~mid-range value.
+                r_bar = getattr(raw_model.config, 'loop_sampling_rbar', None)
+                if r_bar is None or r_bar <= 0:
+                    # Heuristic: choose half of the maximum (minus the +1 shift accounted for later)
+                    r_bar = max(1.0, (max_loops_for_sampling_this_group + 1) / 2.0 - 1.0)
+
+                # Sample τ ~ N(log(r̄) - 0.5 σ², σ)
+                tau_mean = math.log(r_bar) - 0.5 * sigma ** 2
+                tau = tau_mean + sigma * torch.randn(1).item()
+
+                # Sample r ~ Poisson(e^{τ}) + 1 to ensure at least one loop
+                poisson_mean = math.exp(tau)
+                sampled_loops = int(torch.poisson(torch.tensor(poisson_mean)).item() + 1)
+
+                # Clamp to valid range [1, max_loops_for_sampling_this_group]
+                sampled_loops = max(1, min(sampled_loops, max_loops_for_sampling_this_group))
+            else:  # Default: uniform sampling
+                if max_loops_for_sampling_this_group > 0:
+                    sampled_loops = torch.randint(low=1, high=max_loops_for_sampling_this_group + 1, size=(1,)).item()
+                else:
+                    sampled_loops = 1
             raw_model.config.sampled_group_loop_counts.append(sampled_loops)
     # --- End: Modified group-specific loop sampling logic ---
 

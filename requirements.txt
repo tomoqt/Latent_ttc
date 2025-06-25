@@ -6,3 +6,4 @@ tiktoken
 wandb
 tqdm
 scikit-learn
+matplotlib

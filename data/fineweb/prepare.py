@@ -6,6 +6,7 @@ import tiktoken
 from huggingface_hub import hf_hub_download
 from tqdm import tqdm
 import pickle
+import shutil  # NEW IMPORT
 
 # Initialize tokenizer
 enc = tiktoken.get_encoding("gpt2")
@@ -64,19 +65,15 @@ if __name__ == '__main__':
             file_path = os.path.join(local_dir, fname)
             total_tokens += os.path.getsize(file_path) // 2 # 2 bytes per token (uint16)
 
-        # Create memory-mapped file
-        dtype = np.uint16
-        arr = np.memmap(filename, dtype=dtype, mode='w+', shape=(total_tokens,))
-
-        # Write each chunk to the memmap file
+        # Remove numpy memmap usage due to observed bus errors on some systems when handling large files.
+        # Instead, write the combined binary file sequentially to disk using buffered copy.
         print(f"Writing {filename}...")
-        idx = 0
-        for fname in tqdm(fnames, desc=f"Processing {split} chunks"):
-            file_path = os.path.join(local_dir, fname)
-            chunk_tokens = np.fromfile(file_path, dtype=dtype)
-            arr[idx : idx + len(chunk_tokens)] = chunk_tokens
-            idx += len(chunk_tokens)
-        arr.flush()
+        with open(filename, "wb") as fout:
+            for fname in tqdm(fnames, desc=f"Processing {split} chunks"):
+                file_path = os.path.join(local_dir, fname)
+                with open(file_path, "rb") as fin:
+                    shutil.copyfileobj(fin, fout)
+        # No need to flush explicitly; the context manager ensures the data is written to disk.
 
     # Create and save meta.pkl
     print("Creating meta.pkl...")
