@@ -4,7 +4,7 @@ set -e # Exit immediately if a command exits with a non-zero status.
 # Base configuration file
 BASE_CONFIG="config/train_fineweb.py"
 NEW_BATCH_SIZE=16
-MAX_ITERS_SWEEP=5000
+MAX_ITERS_SWEEP=50000
 
 # Target total loop iterations metric, based on Experiment 1 (baseline from config)
 # Exp1: loop_groups=[[2,3],[4]] (sum_len_groups=3), max_loops=30 (from config) -> Metric = 3 * 30 = 90

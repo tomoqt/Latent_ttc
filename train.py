@@ -189,9 +189,11 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 # loop_groups = None # Will be defaulted below if init_from == 'scratch' and not set
 # loop_counts = None
 enable_auto_exit_eval = False # Whether to run automatic loop exit evaluation
+# backprop depth for loops (only last-k loops carry gradients)
+loops_backprop_depth = 8  # default k=8; set to <=0 or None to disable truncated backprop on loops
 # loop sampling distribution options
 loop_sampling_strategy = 'log_poisson'  # Options: 'uniform', 'log_poisson'
-loop_sampling_rbar = None  # Targeted mean loops for the Poisson component (before the +1 shift). If None, a heuristic value will be used.
+loop_sampling_rbar = 32  # Targeted mean loops for the Poisson component (before the +1 shift). If None, a heuristic value will be used.
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str, type(None)))] # Added type(None) to catch loop_groups/counts if they are initially None
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -302,6 +304,7 @@ else:
                     loop_noise_scale=globals().get('loop_noise_scale', 0.0),
                     concatenate_initial_representation=globals().get('concatenate_initial_representation', True),
                     loops_representation=globals().get('loops_representation', False),
+                    loops_backprop_depth=globals().get('loops_backprop_depth', 8),
                     effective_n_layer=None # Placeholder, will be calculated below
                     )
 
@@ -737,7 +740,7 @@ while True:
                 sampled_loops = int(torch.poisson(torch.tensor(poisson_mean)).item() + 1)
 
                 # Clamp to valid range [1, max_loops_for_sampling_this_group]
-                sampled_loops = max(1, min(sampled_loops, max_loops_for_sampling_this_group))
+                #sampled_loops = max(1, min(sampled_loops, max_loops_for_sampling_this_group)) avoid this clamping!!
             else:  # Default: uniform sampling
                 if max_loops_for_sampling_this_group > 0:
                     sampled_loops = torch.randint(low=1, high=max_loops_for_sampling_this_group + 1, size=(1,)).item()

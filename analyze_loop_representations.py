@@ -20,6 +20,78 @@ import matplotlib.patches as mpatches # Added for custom legends
 # Assuming model.py is in the same directory or accessible in PYTHONPATH
 from model import GPTConfig, GPT
 
+def box_counting_dimension(points):
+    """
+    Estimates the box-counting (Minkowski-Bouligand) dimension.
+    This is often used as an estimate for the Hausdorff dimension.
+
+    Args:
+        points (np.ndarray): An array of shape (n_points, n_dims).
+        
+    Returns:
+        float: The estimated box-counting dimension.
+    """
+    points = np.asarray(points)
+    if points.ndim != 2 or points.shape[0] < 2:
+        return 0.0
+
+    # Calculate the bounding box of the point cloud
+    # This gives us the minimum and maximum coordinates in each dimension
+    min_coords = points.min(axis=0)
+    max_coords = points.max(axis=0)
+    
+    # Edge case: if all points are identical (degenerate case), dimension is 0
+    # This happens when the trajectory doesn't actually move through space
+    if np.all(min_coords == max_coords):
+        return 0.0
+
+    # Normalize the point cloud to unit cube [0,1]^d
+    # This makes the analysis scale-invariant and easier to work with
+    side_lengths = max_coords - min_coords
+    # Add small epsilon to avoid division by zero
+    points_normalized = (points - min_coords) / (side_lengths + 1e-9)
+
+    # Create a range of scales (box sizes) to test
+    # We use logarithmic spacing from 0.001 to 1.0 to cover multiple orders of magnitude
+    # This range allows us to see how the point count changes across different resolutions
+    scales = np.logspace(np.log10(0.001), np.log10(1.0), num=20, endpoint=False)
+    
+    # For each scale, count how many boxes are needed to cover the point cloud
+    counts = []
+    for scale in scales:
+        # Skip invalid scales
+        if scale <= 0: continue
+        
+        # Discretize the normalized points by dividing by scale and taking floor
+        # This effectively creates a grid of boxes of size 'scale'
+        discretized = np.floor(points_normalized / scale)
+        
+        # Count unique boxes (grid cells) that contain at least one point
+        # This gives us N(ε) in the box-counting formula
+        count = len(np.unique(discretized, axis=0))
+        counts.append(count)
+        
+    # Convert to numpy array for vectorized operations
+    counts = np.array(counts)
+    
+    # Filter out scales where we only have 1 box (degenerate case)
+    # We need at least 2 different box counts to fit a line
+    valid_indices = (counts > 1)
+    if np.sum(valid_indices) < 2:
+        return np.nan  # Not enough data to estimate dimension
+        
+    # Keep only the valid scales and counts for the linear fit
+    scales = scales[valid_indices]
+    counts = counts[valid_indices]
+    
+    # Fit a line to log(N(ε)) vs log(1/ε) using least squares
+    # The slope of this line is the box-counting dimension
+    # Formula: log(N(ε)) = D * log(1/ε) + c, where D is the dimension
+    coeffs = np.polyfit(np.log(1/scales), np.log(counts), 1)
+    
+    # Return the slope (first coefficient), which is our dimension estimate
+    return coeffs[0]
+
 def sanitize_filename_part(name_part):
     """Sanitizes a string to be used as part of a filename."""
     # Remove any characters that are not alphanumeric, underscore, or hyphen
@@ -483,6 +555,7 @@ def main():
     parser.add_argument('--n_pca_components', type=int, default=2, help='Number of PCA components (2 or 3 for plotting)')
     parser.add_argument('--max_new_tokens_for_analysis', type=int, default=1, help='Number of new tokens for representation collection trigger')
     parser.add_argument('--num_last_steps_for_zoom', type=int, default=15, help='Number of last loops for zoomed plots')
+    parser.add_argument('--calculate_hausdorff_dimension', action='store_true', help='If set, calculate the Hausdorff dimension of trajectories.')
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -598,7 +671,29 @@ def main():
     prompt_seq_len = loop_representations_processed[0].shape[0] if loop_representations_processed else 0
     if prompt_seq_len == 0: print("Error: Zero sequence length from representations."); return
 
-    print(f"Computing PCA with up to {args.n_pca_components} components...")
+    if args.calculate_hausdorff_dimension:
+        print("\nCalculating Hausdorff dimension for each token's trajectory (before PCA)...")
+        if len(loop_representations_processed) > 1:
+            hausdorff_dimensions = {}
+            for token_idx in range(prompt_seq_len):
+                trajectory_points = torch.stack([loop_representations_processed[i][token_idx] for i in range(len(loop_representations_processed))]).numpy()
+                
+                dim = box_counting_dimension(trajectory_points)
+                
+                token_str = prompt_tokens_str[token_idx] if token_idx < len(prompt_tokens_str) else f"UNK_{token_idx}"
+                hausdorff_dimensions[f"token_{token_idx}_{token_str}"] = dim
+                print(f"  Token '{token_str}' (pos {token_idx}): Estimated Hausdorff Dimension = {dim:.4f}")
+
+            hausdorff_output_path = os.path.join(args.output_dir, "hausdorff_dimensions.txt")
+            with open(hausdorff_output_path, 'w') as f:
+                f.write("Estimated Hausdorff (Box-Counting) Dimensions:\n")
+                for key, value in hausdorff_dimensions.items():
+                    f.write(f"{key}: {value:.4f}\n")
+            print(f"Hausdorff dimensions saved to {hausdorff_output_path}")
+        else:
+            print("Skipping Hausdorff dimension calculation: not enough loop representations (need > 1).")
+
+    print(f"\nComputing PCA with up to {args.n_pca_components} components...")
     try:
         pca_model, transformed_reps_list = compute_pca_and_transform(loop_representations_processed, n_components=args.n_pca_components)
     except ValueError as e: print(f"Error during PCA: {e}"); return
