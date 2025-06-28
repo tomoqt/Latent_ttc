@@ -544,6 +544,258 @@ def plot_single_token_pca_trajectory(pca_transformed_reps_list, token_idx_to_plo
     view_type = "Zoomed" if is_zoomed_view else "Full"
     print(f"{view_type} individual {dim_str} PCA trajectory for token \"{token_str_label}\" saved to {output_file_path}")
 
+def plot_convergence_diagnostics(diagnostics_data, output_dir, model_config):
+    """
+    Plots the collected convergence diagnostics for each loop group.
+    """
+    if not diagnostics_data:
+        print("No convergence diagnostics data to plot.")
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    for group_key, metrics in diagnostics_data.items():
+        num_iterations = len(metrics['delta_norm'])
+        if num_iterations < 2:
+            print(f"Not enough data to plot diagnostics for {group_key}.")
+            continue
+        
+        iterations = np.arange(num_iterations)
+        
+        fig, axs = plt.subplots(2, 2, figsize=(15, 12))
+        fig.suptitle(f'Convergence Diagnostics for {group_key.replace("_", " ")}', fontsize=16)
+
+        # Plot Δ-norm
+        axs[0, 0].plot(iterations, metrics['delta_norm'], marker='o', linestyle='-')
+        axs[0, 0].set_title('Change in Representation Norm (Δ-norm)')
+        axs[0, 0].set_xlabel('Loop Iteration')
+        axs[0, 0].set_ylabel(r'$\|x_{k+1} - x_k\|_2$')
+        axs[0, 0].grid(True)
+
+        # Plot Δ-angle
+        # Skip first value which is None
+        axs[0, 1].plot(iterations[1:], metrics['delta_angle'][1:], marker='o', linestyle='-')
+        axs[0, 1].set_title('Angle between Successive Changes (Δ-angle)')
+        axs[0, 1].set_xlabel('Loop Iteration')
+        axs[0, 1].set_ylabel(r'$\cos\angle(\Delta_k, \Delta_{k-1})$')
+        axs[0, 1].grid(True)
+
+        # Plot Hidden-vector norm
+        axs[1, 0].plot(iterations, metrics['hidden_norm'], marker='o', linestyle='-')
+        axs[1, 0].set_title('Hidden Vector Norm')
+        axs[1, 0].set_xlabel('Loop Iteration')
+        axs[1, 0].set_ylabel(r'$\|x_k\|$')
+        axs[1, 0].grid(True)
+
+        # Plot Logit drift
+        # Skip first value which is None
+        axs[1, 1].plot(iterations[1:], metrics['logit_drift'][1:], marker='o', linestyle='-')
+        axs[1, 1].set_title('Logit Drift (KL Divergence)')
+        axs[1, 1].set_xlabel('Loop Iteration')
+        axs[1, 1].set_ylabel(r'KL$(p_{k-1}\|p_k)$')
+        axs[1, 1].set_yscale('log')
+        axs[1, 1].grid(True, which="both")
+        
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plot_filename = f"convergence_diagnostics_{group_key}.png"
+        plot_filepath = os.path.join(output_dir, plot_filename)
+        plt.savefig(plot_filepath, dpi=300)
+        plt.close(fig)
+        print(f"Convergence diagnostics plot saved to {plot_filepath}")
+
+def plot_jacobian_eigenvalues(eigenvalue_data, output_dir, model_config):
+    """
+    Plots the eigenvalue spectrum of the Jacobian for each loop group and token.
+    """
+    if not eigenvalue_data:
+        print("No Jacobian eigenvalue data to plot.")
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for group_key, token_eigvals_list in eigenvalue_data.items():
+        num_tokens = len(token_eigvals_list)
+        if num_tokens == 0:
+            continue
+
+        fig = plt.figure(figsize=(10, 10))
+        ax = fig.add_subplot(111, aspect='equal')
+        
+        # Unit circle
+        unit_circle = mpatches.Circle((0, 0), 1, color='black', fill=False, linestyle='--', alpha=0.5, label='Unit Circle')
+        ax.add_patch(unit_circle)
+        
+        cmap = plt.cm.get_cmap('viridis', num_tokens)
+        
+        for token_idx, eigvals in enumerate(token_eigvals_list):
+            eigvals_complex = np.array(eigvals)
+            ax.scatter(eigvals_complex.real, eigvals_complex.imag, s=10, 
+                       color=cmap(token_idx / max(1, num_tokens - 1)), 
+                       alpha=0.6, label=f'Token {token_idx}')
+
+        ax.set_xlabel('Real Part')
+        ax.set_ylabel('Imaginary Part')
+        ax.set_title(f'Jacobian Eigenvalue Spectrum for {group_key.replace("_", " ")}')
+        ax.grid(True)
+        ax.axhline(0, color='grey', lw=0.5)
+        ax.axvline(0, color='grey', lw=0.5)
+        
+        # Set limits to be slightly larger than the unit circle for better visualization
+        lim_max = 1.1
+        all_eigvals = np.concatenate(token_eigvals_list)
+        max_abs = np.max(np.abs(all_eigvals))
+        if max_abs > 1.0:
+            lim_max = max_abs * 1.1
+            
+        ax.set_xlim(-lim_max, lim_max)
+        ax.set_ylim(-lim_max, lim_max)
+        
+        # To avoid overcrowding, only show legend for a few tokens
+        handles, labels = ax.get_legend_handles_labels()
+        if num_tokens > 10:
+            # Show legend for first, middle, and last token
+            indices_to_show = [0, num_tokens // 2, num_tokens - 1]
+            handles = [handles[i] for i in indices_to_show]
+            labels = [labels[i] for i in indices_to_show]
+        ax.legend(handles, labels, title="Token Position", loc='best')
+
+        plt.tight_layout()
+        plot_filename = f"jacobian_eigvals_{group_key}.png"
+        plot_filepath = os.path.join(output_dir, plot_filename)
+        plt.savefig(plot_filepath, dpi=300)
+        plt.close(fig)
+        print(f"Jacobian eigenvalues plot saved to {plot_filepath}")
+
+def plot_global_diagnostics(diagnostics_data, output_dir):
+    """
+    Plots the collected global convergence diagnostics across all layers/steps.
+    """
+    if not diagnostics_data or not diagnostics_data['delta_norm']:
+        print("No global diagnostics data to plot.")
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+    num_steps = len(diagnostics_data['delta_norm'])
+    steps = np.arange(num_steps)
+
+    fig, axs = plt.subplots(2, 2, figsize=(15, 12))
+    fig.suptitle('Global Diagnostics Across Forward Pass', fontsize=16)
+
+    # Plot Δ-norm
+    axs[0, 0].plot(steps, diagnostics_data['delta_norm'], marker='o', linestyle='-', markersize=3)
+    axs[0, 0].set_title('Change in Representation Norm (Δ-norm)')
+    axs[0, 0].set_xlabel('Global Step (Layer or Loop Iteration)')
+    axs[0, 0].set_ylabel(r'$\|x_{k+1} - x_k\|_2$')
+    axs[0, 0].grid(True)
+
+    # Plot Δ-angle
+    axs[0, 1].plot(steps[1:], diagnostics_data['delta_angle'][1:], marker='o', linestyle='-', markersize=3)
+    axs[0, 1].set_title('Angle between Successive Changes (Δ-angle)')
+    axs[0, 1].set_xlabel('Global Step (Layer or Loop Iteration)')
+    axs[0, 1].set_ylabel(r'$\cos\angle(\Delta_k, \Delta_{k-1})$')
+    axs[0, 1].grid(True)
+
+    # Plot Hidden-vector norm
+    axs[1, 0].plot(steps, diagnostics_data['hidden_norm'], marker='o', linestyle='-', markersize=3)
+    axs[1, 0].set_title('Hidden Vector Norm')
+    axs[1, 0].set_xlabel('Global Step (Layer or Loop Iteration)')
+    axs[1, 0].set_ylabel(r'$\|x_k\|$')
+    axs[1, 0].grid(True)
+
+    # Plot Logit drift
+    axs[1, 1].plot(steps[1:], diagnostics_data['logit_drift'][1:], marker='o', linestyle='-', markersize=3)
+    axs[1, 1].set_title('Logit Drift (KL Divergence)')
+    axs[1, 1].set_xlabel('Global Step (Layer or Loop Iteration)')
+    axs[1, 1].set_ylabel(r'KL$(p_{k-1}\|p_k)$')
+    axs[1, 1].set_yscale('log')
+    axs[1, 1].grid(True, which="both")
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plot_filepath = os.path.join(output_dir, "global_diagnostics.png")
+    plt.savefig(plot_filepath, dpi=300)
+    plt.close(fig)
+    print(f"Global diagnostics plot saved to {plot_filepath}")
+
+def plot_jacobian_eigenvalue_trajectory(eigval_trajectory_data, output_dir):
+    """
+    Plots the trajectory of the max-magnitude Jacobian eigenvalue for each token in a loop group.
+    """
+    if not eigval_trajectory_data:
+        print("No Jacobian eigenvalue trajectory data to plot.")
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    for group_key, token_trajectories in eigval_trajectory_data.items():
+        num_tokens = len(token_trajectories)
+        if num_tokens == 0 or len(token_trajectories[0]) == 0:
+            continue
+            
+        fig, ax = plt.subplots(figsize=(12, 8))
+        num_iterations = len(token_trajectories[0])
+        iterations = np.arange(num_iterations)
+        cmap = plt.cm.get_cmap('viridis', num_tokens)
+
+        for token_idx, trajectory in enumerate(token_trajectories):
+            ax.plot(iterations, trajectory, marker='.', linestyle='-', 
+                    color=cmap(token_idx / max(1, num_tokens - 1)),
+                    alpha=0.7, label=f'Token {token_idx}')
+
+        ax.axhline(1.0, color='r', linestyle='--', label='Stability Boundary (|λ|=1)')
+        ax.set_xlabel('Loop Iteration')
+        ax.set_ylabel('Max Eigenvalue Magnitude |λ|')
+        ax.set_title(f'Jacobian Max Eigenvalue Trajectory for {group_key.replace("_", " ")}')
+        ax.grid(True)
+        ax.legend(title="Token Position", loc='center left', bbox_to_anchor=(1, 0.5))
+        
+        plt.tight_layout(rect=[0, 0, 0.85, 1])
+        plot_filename = f"jacobian_eigval_trajectory_{group_key}.png"
+        plot_filepath = os.path.join(output_dir, plot_filename)
+        plt.savefig(plot_filepath, dpi=300)
+        plt.close(fig)
+        print(f"Jacobian eigenvalue trajectory plot saved to {plot_filepath}")
+
+def plot_max_singular_values(model, output_dir):
+    """
+    Computes and plots the maximum singular value for each 2D weight matrix in the model.
+    """
+    max_singular_values = {}
+    for name, param in model.named_parameters():
+        # We are interested in 2D weight matrices
+        if param.dim() == 2:
+            with torch.no_grad():
+                try:
+                    # More efficient to just get singular values.
+                    # Move to CPU and ensure float32 for SVD robustness.
+                    S = torch.linalg.svdvals(param.to('cpu', dtype=torch.float32))
+                    max_sv = S.max().item()
+                    max_singular_values[name] = max_sv
+                except torch.linalg.LinAlgError as e:
+                    print(f"SVD computation failed for parameter {name}: {e}. Skipping.")
+                except Exception as e:
+                    print(f"An unexpected error occurred during SVD for {name}: {e}. Skipping.")
+
+    if not max_singular_values:
+        print("No 2D weight matrices found for which to plot singular values.")
+        return
+
+    # Sorting by name for a consistent plot order
+    sorted_names = sorted(max_singular_values.keys())
+    sorted_values = [max_singular_values[name] for name in sorted_names]
+
+    plt.figure(figsize=(15, 12))
+    plt.bar(range(len(sorted_values)), sorted_values)
+    plt.xticks(range(len(sorted_names)), sorted_names, rotation=90, fontsize='small')
+    plt.ylabel('Maximum Singular Value')
+    plt.title('Maximum Singular Values of Model Weight Matrices')
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+
+    plot_filepath = os.path.join(output_dir, "max_singular_values.png")
+    plt.savefig(plot_filepath, dpi=300)
+    plt.close()
+    print(f"Maximum singular values plot saved to {plot_filepath}")
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze and visualize loop representations from a GPT model using PCA.")
     parser.add_argument('--checkpoint_path', type=str, required=True, help='Full path to the model checkpoint (.pt file)')
@@ -556,6 +808,11 @@ def main():
     parser.add_argument('--max_new_tokens_for_analysis', type=int, default=1, help='Number of new tokens for representation collection trigger')
     parser.add_argument('--num_last_steps_for_zoom', type=int, default=15, help='Number of last loops for zoomed plots')
     parser.add_argument('--calculate_hausdorff_dimension', action='store_true', help='If set, calculate the Hausdorff dimension of trajectories.')
+    parser.add_argument('--track_convergence_diagnostics', action='store_true', help='If set, track and plot convergence diagnostics.')
+    parser.add_argument('--calculate_jacobian', action='store_true', help='If set, calculate and plot Jacobian eigenvalues.')
+    parser.add_argument('--calculate_jacobian_trajectory', action='store_true', help='If set, plot the trajectory of the max Jacobian eigenvalue.')
+    parser.add_argument('--track_global_diagnostics', action='store_true', help='If set, plot diagnostics across the entire model forward pass.')
+    parser.add_argument('--plot_singular_values', action='store_true', help='If set, plot the max singular values of the model\'s weight matrices.')
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -574,6 +831,14 @@ def main():
     
     gpt_model_config['loops_representation'] = True
     gpt_model_config['automatic_loop_exit'] = False
+    if args.track_convergence_diagnostics:
+        gpt_model_config['track_convergence_diagnostics'] = True
+    if args.calculate_jacobian:
+        gpt_model_config['calculate_jacobian'] = True
+    if args.calculate_jacobian_trajectory:
+        gpt_model_config['calculate_jacobian_trajectory'] = True
+    if args.track_global_diagnostics:
+        gpt_model_config['track_global_diagnostics'] = True
     if args.max_loops_override is not None:
         gpt_model_config['max_loops'] = args.max_loops_override
     if 'effective_n_layer' not in gpt_model_config:
@@ -595,6 +860,11 @@ def main():
     model.eval().to(device)
     print(f"Model: vocab {model.config.vocab_size}, block {model.config.block_size}, n_layer {model.config.n_layer}, max_loops {model.config.max_loops}")
     if model.config.loop_groups: print(f"Loop groups: {model.config.loop_groups}")
+
+    # --- Plot Singular Values if requested ---
+    if args.plot_singular_values:
+        print("\nPlotting maximum singular values of model weights...")
+        plot_max_singular_values(model, args.output_dir)
 
     print(f"Loading tokenizer from {args.meta_path}...")
     tokenizer_encode_fn = None
@@ -661,8 +931,43 @@ def main():
 
     print("Getting loop representations...")
     with torch.no_grad():
-        generated_ids, loop_representations_raw = model.generate(
-            input_tensor, max_new_tokens=args.max_new_tokens_for_analysis, return_first_step_loop_reps=True)
+        # Call generate, which might return more than 2 values now
+        outputs = model.generate(
+            input_tensor, 
+            max_new_tokens=args.max_new_tokens_for_analysis, 
+            return_first_step_loop_reps=True
+        )
+
+    # Unpack outputs carefully
+    generated_ids = outputs[0] if isinstance(outputs, tuple) else outputs
+    loop_representations_raw = None
+    convergence_diagnostics = None
+    jacobian_eigvals = None
+    jacobian_eigval_trajectory = None
+    global_diagnostics = None
+    
+    next_output_idx = 1
+    if isinstance(outputs, tuple):
+        # The first optional return is always loop_representations because return_first_step_loop_reps=True
+        if len(outputs) > next_output_idx:
+            loop_representations_raw = outputs[next_output_idx]
+            next_output_idx += 1
+        
+        # Check for other optional returns based on config flags
+        if model.config.track_convergence_diagnostics and len(outputs) > next_output_idx:
+            convergence_diagnostics = outputs[next_output_idx]
+            next_output_idx += 1
+
+        if model.config.calculate_jacobian and len(outputs) > next_output_idx:
+            jacobian_eigvals = outputs[next_output_idx]
+            next_output_idx += 1
+            
+        if model.config.calculate_jacobian_trajectory and len(outputs) > next_output_idx:
+            jacobian_eigval_trajectory = outputs[next_output_idx]
+            next_output_idx += 1
+
+        if model.config.track_global_diagnostics and len(outputs) > next_output_idx:
+            global_diagnostics = outputs[next_output_idx]
 
     if not loop_representations_raw:
         print("Error: No loop representations returned."); return
@@ -692,6 +997,47 @@ def main():
             print(f"Hausdorff dimensions saved to {hausdorff_output_path}")
         else:
             print("Skipping Hausdorff dimension calculation: not enough loop representations (need > 1).")
+
+    # --- Process and Plot Optional Diagnostics ---
+    if convergence_diagnostics:
+        print("\nPlotting convergence diagnostics...")
+        diagnostics_output_dir = os.path.join(args.output_dir, "convergence_diagnostics_plots")
+        plot_convergence_diagnostics(convergence_diagnostics, diagnostics_output_dir, model_config=gptconf)
+        # Save raw data
+        diagnostics_data_path = os.path.join(args.output_dir, "convergence_diagnostics.pkl")
+        with open(diagnostics_data_path, 'wb') as f:
+            pickle.dump(convergence_diagnostics, f)
+        print(f"Convergence diagnostics data saved to {diagnostics_data_path}")
+
+    if jacobian_eigvals:
+        print("\nPlotting Jacobian eigenvalues...")
+        jacobian_output_dir = os.path.join(args.output_dir, "jacobian_eigenvalue_plots")
+        plot_jacobian_eigenvalues(jacobian_eigvals, jacobian_output_dir, model_config=gptconf)
+        # Save raw data
+        jacobian_data_path = os.path.join(args.output_dir, "jacobian_eigenvalues.pkl")
+        with open(jacobian_data_path, 'wb') as f:
+            pickle.dump(jacobian_eigvals, f)
+        print(f"Jacobian eigenvalues data saved to {jacobian_data_path}")
+
+    if jacobian_eigval_trajectory:
+        print("\nPlotting Jacobian eigenvalue trajectories...")
+        jacobian_traj_output_dir = os.path.join(args.output_dir, "jacobian_eigenvalue_plots")
+        plot_jacobian_eigenvalue_trajectory(jacobian_eigval_trajectory, jacobian_traj_output_dir)
+        # Save raw data
+        jacobian_traj_data_path = os.path.join(args.output_dir, "jacobian_eigval_trajectory.pkl")
+        with open(jacobian_traj_data_path, 'wb') as f:
+            pickle.dump(jacobian_eigval_trajectory, f)
+        print(f"Jacobian eigenvalue trajectory data saved to {jacobian_traj_data_path}")
+        
+    if global_diagnostics:
+        print("\nPlotting global diagnostics...")
+        global_diagnostics_output_dir = os.path.join(args.output_dir, "global_diagnostics_plots")
+        plot_global_diagnostics(global_diagnostics, global_diagnostics_output_dir)
+        # Save raw data
+        global_diagnostics_data_path = os.path.join(args.output_dir, "global_diagnostics.pkl")
+        with open(global_diagnostics_data_path, 'wb') as f:
+            pickle.dump(global_diagnostics, f)
+        print(f"Global diagnostics data saved to {global_diagnostics_data_path}")
 
     print(f"\nComputing PCA with up to {args.n_pca_components} components...")
     try:

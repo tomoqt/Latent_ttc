@@ -33,6 +33,7 @@ import torch.nn as nn
 # -----------------------------------------------------------------------------
 # Muon optimizer implementation
 import torch.distributed as dist
+from utils.spectral_clipping import spectral_hardcap
 
 def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int) -> torch.Tensor:
     """
@@ -174,6 +175,8 @@ muon_lr = 0.02 # learning rate for Muon
 muon_momentum = 0.95 # momentum for Muon
 muon_nesterov = True # whether to use nesterov momentum in Muon
 muon_ns_steps = 5 # number of Newton-Schulz iteration steps
+# spectral clipping
+spectral_clip_beta = 0.0 # beta for spectral clipping, set to > 0 to enable
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
@@ -776,6 +779,14 @@ while True:
     else:
         scaler.step(optimizer)
     scaler.update()
+
+    # spectral clipping
+    if not use_baseline_model and spectral_clip_beta > 0.0:
+        with torch.no_grad():
+            for n, p in raw_model.named_parameters():
+                if p.dim() >= 2 and 'wte' not in n and 'wpe' not in n and 'lm_head' not in n:
+                    p.data = spectral_hardcap(p.data, beta=spectral_clip_beta, ns_steps=muon_ns_steps)
+
     # flush the gradients as soon as we can, no need for this memory anymore
     if use_muon and isinstance(optimizer, list):
         optimizer[0].zero_grad(set_to_none=True)
@@ -795,6 +806,23 @@ while True:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+    
+    # periodic checkpoint saving
+    if master_process and iter_num > 0 and iter_num % 5000 == 0:
+        checkpoint = {
+            'model': raw_model.state_dict(),
+            'optimizer': optimizer.state_dict() if not use_muon or not isinstance(optimizer, list) else None,
+            'optimizers': [opt.state_dict() for opt in optimizer] if use_muon and isinstance(optimizer, list) else None,
+            'model_args': model_args,
+            'iter_num': iter_num,
+            'best_val_loss': best_val_loss,
+            'config': config,
+        }
+        model_type = "baseline" if use_baseline_model else "looped"
+        checkpoint_path = os.path.join(out_dir, f'ckpt_{iter_num//1000}.pt')
+        print(f"saving {model_type} model periodic checkpoint to {checkpoint_path}")
+        torch.save(checkpoint, checkpoint_path)
+        
     iter_num += 1
     local_iter_num += 1
 
