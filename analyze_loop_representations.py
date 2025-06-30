@@ -813,11 +813,20 @@ def main():
     parser.add_argument('--calculate_jacobian_trajectory', action='store_true', help='If set, plot the trajectory of the max Jacobian eigenvalue.')
     parser.add_argument('--track_global_diagnostics', action='store_true', help='If set, plot diagnostics across the entire model forward pass.')
     parser.add_argument('--plot_singular_values', action='store_true', help='If set, plot the max singular values of the model\'s weight matrices.')
+    parser.add_argument('--wandb_project', type=str, default=None, help='Wandb project name for logging analysis.')
+    parser.add_argument('--wandb_run_name', type=str, default=None, help='Wandb run name for logging analysis. If not provided, a new one will be generated.')
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
     device = torch.device(args.device)
     print(f"Using device: {device}")
+
+    wandb_logging_enabled = args.wandb_project and args.wandb_run_name
+    if wandb_logging_enabled:
+        import wandb
+        # Resume the run if it exists, otherwise create a new one.
+        # This allows logging analysis artifacts to the same run as training.
+        wandb.init(project=args.wandb_project, name=args.wandb_run_name, id=args.wandb_run_name, resume="allow")
 
     print(f"Loading checkpoint from {args.checkpoint_path}...")
     checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
@@ -865,6 +874,8 @@ def main():
     if args.plot_singular_values:
         print("\nPlotting maximum singular values of model weights...")
         plot_max_singular_values(model, args.output_dir)
+        if wandb_logging_enabled:
+            wandb.log({"max_singular_values": wandb.Image(os.path.join(args.output_dir, "max_singular_values.png"))})
 
     print(f"Loading tokenizer from {args.meta_path}...")
     tokenizer_encode_fn = None
@@ -1008,6 +1019,11 @@ def main():
         with open(diagnostics_data_path, 'wb') as f:
             pickle.dump(convergence_diagnostics, f)
         print(f"Convergence diagnostics data saved to {diagnostics_data_path}")
+        if wandb_logging_enabled:
+            for group_key in convergence_diagnostics.keys():
+                plot_path = os.path.join(diagnostics_output_dir, f"convergence_diagnostics_{group_key}.png")
+                if os.path.exists(plot_path):
+                    wandb.log({f"convergence_diagnostics/{group_key}": wandb.Image(plot_path)})
 
     if jacobian_eigvals:
         print("\nPlotting Jacobian eigenvalues...")
@@ -1018,6 +1034,11 @@ def main():
         with open(jacobian_data_path, 'wb') as f:
             pickle.dump(jacobian_eigvals, f)
         print(f"Jacobian eigenvalues data saved to {jacobian_data_path}")
+        if wandb_logging_enabled:
+            for group_key in jacobian_eigvals.keys():
+                plot_path = os.path.join(jacobian_output_dir, f"jacobian_eigvals_{group_key}.png")
+                if os.path.exists(plot_path):
+                    wandb.log({f"jacobian_eigenvalues/{group_key}": wandb.Image(plot_path)})
 
     if jacobian_eigval_trajectory:
         print("\nPlotting Jacobian eigenvalue trajectories...")
@@ -1028,6 +1049,11 @@ def main():
         with open(jacobian_traj_data_path, 'wb') as f:
             pickle.dump(jacobian_eigval_trajectory, f)
         print(f"Jacobian eigenvalue trajectory data saved to {jacobian_traj_data_path}")
+        if wandb_logging_enabled:
+            for group_key in jacobian_eigval_trajectory.keys():
+                plot_path = os.path.join(jacobian_traj_output_dir, f"jacobian_eigval_trajectory_{group_key}.png")
+                if os.path.exists(plot_path):
+                    wandb.log({f"jacobian_eigval_trajectory/{group_key}": wandb.Image(plot_path)})
         
     if global_diagnostics:
         print("\nPlotting global diagnostics...")
@@ -1038,6 +1064,8 @@ def main():
         with open(global_diagnostics_data_path, 'wb') as f:
             pickle.dump(global_diagnostics, f)
         print(f"Global diagnostics data saved to {global_diagnostics_data_path}")
+        if wandb_logging_enabled:
+            wandb.log({"global_diagnostics": wandb.Image(os.path.join(global_diagnostics_output_dir, "global_diagnostics.png"))})
 
     print(f"\nComputing PCA with up to {args.n_pca_components} components...")
     try:
@@ -1053,6 +1081,8 @@ def main():
         combined_plot_filepath_2d = os.path.join(args.output_dir, combined_plot_filename_2d)
         print(f"Plotting combined 2D PCA trajectories to {combined_plot_filepath_2d}...")
         plot_pca_trajectories_2d(reps_for_plotting_2d, prompt_tokens_str, combined_plot_filepath_2d, model_config=gptconf)
+        if wandb_logging_enabled:
+            wandb.log({"pca_trajectories_2d_combined": wandb.Image(combined_plot_filepath_2d)})
     else:
         print("Skipping 2D plots as n_pca_components < 2.")
 
@@ -1063,6 +1093,8 @@ def main():
         combined_plot_filepath_3d = os.path.join(args.output_dir, combined_plot_filename_3d)
         print(f"Plotting combined 3D PCA trajectories to {combined_plot_filepath_3d}...")
         plot_pca_trajectories_3d(reps_for_plotting_3d, prompt_tokens_str, combined_plot_filepath_3d, model_config=gptconf)
+        if wandb_logging_enabled:
+            wandb.log({"pca_trajectories_3d_combined": wandb.Image(combined_plot_filepath_3d)})
     else:
         print("Skipping 3D plots as n_pca_components < 3.")
 
@@ -1081,11 +1113,16 @@ def main():
             filepath_2d_full = os.path.join(individual_plots_dir, filename_2d_full)
             plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_2d_full, 
                                              is_3d_plot=False, is_zoomed_view=False, model_config=gptconf)
+            if wandb_logging_enabled:
+                wandb.log({f"individual_plots/2d_full_token_{token_idx}": wandb.Image(filepath_2d_full)})
+
             if num_available_loops > args.num_last_steps_for_zoom:
                 filename_2d_zoomed = f"token_{token_idx}_{sanitized_token_str}_pca_2D_zoomed_last{args.num_last_steps_for_zoom}.png"
                 filepath_2d_zoomed = os.path.join(individual_plots_dir, filename_2d_zoomed)
                 plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_2d_zoomed, 
                                                  is_3d_plot=False, is_zoomed_view=True, num_last_steps_to_zoom=args.num_last_steps_for_zoom, model_config=gptconf)
+                if wandb_logging_enabled:
+                    wandb.log({f"individual_plots/2d_zoomed_token_{token_idx}": wandb.Image(filepath_2d_zoomed)})
         
         # Individual 3D plots (full and zoomed)
         if args.n_pca_components >=3:
@@ -1093,13 +1130,21 @@ def main():
             filepath_3d_full = os.path.join(individual_plots_dir, filename_3d_full)
             plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_3d_full, 
                                              is_3d_plot=True, is_zoomed_view=False, model_config=gptconf)
+            if wandb_logging_enabled:
+                wandb.log({f"individual_plots/3d_full_token_{token_idx}": wandb.Image(filepath_3d_full)})
+
             if num_available_loops > args.num_last_steps_for_zoom:
                 filename_3d_zoomed = f"token_{token_idx}_{sanitized_token_str}_pca_3D_zoomed_last{args.num_last_steps_for_zoom}.png"
                 filepath_3d_zoomed = os.path.join(individual_plots_dir, filename_3d_zoomed)
                 plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_3d_zoomed, 
-                                                 is_3d_plot=True, is_zoomed_view=True, num_last_steps_to_zoom=args.num_last_steps_for_zoom, model_config=gptconf)
+                                                 is_3d_plot=True, is_zoomed_view=True, num_last_steps_for_zoom=args.num_last_steps_for_zoom, model_config=gptconf)
+                if wandb_logging_enabled:
+                    wandb.log({f"individual_plots/3d_zoomed_token_{token_idx}": wandb.Image(filepath_3d_zoomed)})
 
     print("Analysis complete.")
+
+    if wandb_logging_enabled:
+        wandb.finish()
 
 if __name__ == '__main__':
     main() 
