@@ -18,8 +18,8 @@ run_experiment() {
     local sum_len_groups="$2"
     local exp_name_suffix="$3"
 
-    # Calculate max_loops to keep the budget constant
-    local max_loops=$(echo "scale=0; $LOOP_BUDGET / $sum_len_groups" | bc)
+    # Calculate max_loops to keep the budget constant (using integer arithmetic)
+    local max_loops=$((LOOP_BUDGET / sum_len_groups))
     
     # Sanitize loop_groups_str for filename (remove brackets, spaces, commas)
     local sanitized_lg=$(echo "$loop_groups_str" | sed 's/\[//g' | sed 's/\]//g' | sed 's/,/_/g' | sed 's/ //g')

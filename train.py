@@ -189,8 +189,8 @@ device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps'
 dtype = 'float16'#'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = True # use PyTorch 2.0 to compile the model to be faster
 # Looping specific configs - already in model.GPTConfig, but listed here for configurator.py
-# loop_groups = None # Will be defaulted below if init_from == 'scratch' and not set
-# loop_counts = None
+loop_groups = [] # Will be defaulted below if init_from == 'scratch' and not set
+loop_counts = []
 enable_auto_exit_eval = False # Whether to run automatic loop exit evaluation
 # backprop depth for loops (only last-k loops carry gradients)
 loops_backprop_depth = 8  # default k=8; set to <=0 or None to disable truncated backprop on loops
@@ -198,7 +198,7 @@ loops_backprop_depth = 8  # default k=8; set to <=0 or None to disable truncated
 loop_sampling_strategy = 'log_poisson'  # Options: 'uniform', 'log_poisson'
 loop_sampling_rbar = 32  # Targeted mean loops for the Poisson component (before the +1 shift). If None, a heuristic value will be used.
 # -----------------------------------------------------------------------------
-config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str, type(None)))] # Added type(None) to catch loop_groups/counts if they are initially None
+config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str, list, type(None)))] # Added list and type(None)
 exec(open('configurator.py').read()) # overrides from command line or config file
 
 # Set output directory based on model type
@@ -319,7 +319,7 @@ if init_from == 'scratch':
         print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
     model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
     # Set default loop_groups if not provided and initializing from scratch
-    if model_args.get('loop_groups') is None and not use_baseline_model:    
+    if not model_args.get('loop_groups') and not use_baseline_model:    
         if n_layer % 2 == 1: # Odd number of layers
             default_group = [[n_layer // 2]]
         else: # Even number of layers
