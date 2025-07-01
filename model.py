@@ -388,7 +388,7 @@ class GPT(nn.Module):
                     x_pass_input = current_loop_iteration_input
 
                     # Apply noise ONLY if actually looping (num_loops > 1) and it's the first iteration
-                    if num_loops_for_this_group > 1 and loop_iter_idx == 0 #and self.config.loop_noise_scale > 0.0:
+                    if num_loops_for_this_group > 1 and loop_iter_idx == 0: #and self.config.loop_noise_scale > 0.0:
                         # noise = torch.randn_like(x_pass_input) * self.config.loop_noise_scale
                         # New noise initialization with specified variance
                         variance_noise = 2.0 / (5 * self.config.n_embd)
