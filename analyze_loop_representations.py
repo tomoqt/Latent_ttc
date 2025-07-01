@@ -777,7 +777,7 @@ def plot_max_singular_values(model, output_dir):
 
     if not max_singular_values:
         print("No 2D weight matrices found for which to plot singular values.")
-        return
+        return max_singular_values
 
     # Sorting by name for a consistent plot order
     sorted_names = sorted(max_singular_values.keys())
@@ -795,10 +795,504 @@ def plot_max_singular_values(model, output_dir):
     plt.savefig(plot_filepath, dpi=300)
     plt.close()
     print(f"Maximum singular values plot saved to {plot_filepath}")
+    return max_singular_values
+
+def plot_comparison_hausdorff(all_models_results, output_dir):
+    """
+    Plots a comparison of Hausdorff dimensions across multiple models.
+    """
+    if not all_models_results:
+        print("No results to compare for Hausdorff dimensions.")
+        return
+
+    # Check which models have Hausdorff dimension data
+    models_with_data = {model_name: results for model_name, results in all_models_results.items() if 'hausdorff_dimensions' in results}
+
+    if not models_with_data:
+        print("No models have Hausdorff dimension data to compare.")
+        return
+
+    # Collect all token labels from all models to create a complete set
+    all_token_labels = set()
+    for model_name, results in models_with_data.items():
+        all_token_labels.update(results['hausdorff_dimensions'].keys())
+    
+    sorted_token_labels = sorted(list(all_token_labels))
+    num_tokens = len(sorted_token_labels)
+    num_models = len(models_with_data)
+    model_names = list(models_with_data.keys())
+
+    # Create plot
+    plt.figure(figsize=(max(15, num_tokens * 1.5), 10))
+    ax = plt.gca()
+
+    bar_width = 0.8 / num_models
+    index = np.arange(num_tokens)
+    
+    # Define a color palette for the models
+    model_colors = plt.cm.get_cmap('tab10', num_models)
+
+    for i, model_name in enumerate(model_names):
+        model_results = models_with_data[model_name]['hausdorff_dimensions']
+        # Get dimensions for each token, using np.nan if a token is missing in a model
+        dimensions = [model_results.get(token_label, np.nan) for token_label in sorted_token_labels]
+        
+        bar_positions = index + i * bar_width - (bar_width * (num_models -1) / 2)
+        ax.bar(bar_positions, dimensions, bar_width, label=model_name, color=model_colors(i))
+
+    ax.set_xlabel('Token')
+    ax.set_ylabel('Estimated Hausdorff Dimension')
+    ax.set_title('Comparison of Trajectory Hausdorff Dimensions Across Models')
+    ax.set_xticks(index)
+    
+    # Shorten token labels for readability on the x-axis
+    xtick_labels = [re.sub(r'token_\d+_', '', label) for label in sorted_token_labels]
+    ax.set_xticklabels(xtick_labels, rotation=45, ha="right")
+    
+    ax.legend(title="Models")
+    plt.grid(True, axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+
+    plot_filepath = os.path.join(output_dir, "comparison_hausdorff_dimensions.png")
+    plt.savefig(plot_filepath, dpi=300)
+    plt.close()
+    print(f"Hausdorff dimension comparison plot saved to {plot_filepath}")
+
+def plot_comparison_singular_values(all_models_results, output_dir):
+    """
+    Plots a comparison of maximum singular values across multiple models.
+    """
+    if not all_models_results:
+        print("No results to compare for singular values.")
+        return
+
+    models_with_data = {model_name: results for model_name, results in all_models_results.items() if 'singular_values' in results}
+    if not models_with_data:
+        print("No models have singular value data to compare.")
+        return
+
+    # Collect all parameter names
+    all_param_names = set()
+    for results in models_with_data.values():
+        all_param_names.update(results['singular_values'].keys())
+    
+    sorted_param_names = sorted(list(all_param_names))
+    num_params = len(sorted_param_names)
+    num_models = len(models_with_data)
+    model_names = list(models_with_data.keys())
+
+    plt.figure(figsize=(max(15, num_params * 0.5), 12))
+    ax = plt.gca()
+
+    bar_width = 0.8 / num_models
+    index = np.arange(num_params)
+    model_colors = plt.cm.get_cmap('tab10', num_models)
+
+    for i, model_name in enumerate(model_names):
+        model_svs = models_with_data[model_name]['singular_values']
+        values = [model_svs.get(param, np.nan) for param in sorted_param_names]
+        
+        bar_positions = index + i * bar_width - (bar_width * (num_models -1) / 2)
+        ax.bar(bar_positions, values, bar_width, label=model_name, color=model_colors(i))
+
+    ax.set_xlabel('Model Parameter')
+    ax.set_ylabel('Maximum Singular Value')
+    ax.set_title('Comparison of Max Singular Values Across Models')
+    ax.set_xticks(index)
+    ax.set_xticklabels(sorted_param_names, rotation=90, fontsize='small')
+    ax.legend(title="Models")
+    plt.grid(True, axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+
+    plot_filepath = os.path.join(output_dir, "comparison_max_singular_values.png")
+    plt.savefig(plot_filepath, dpi=300)
+    plt.close()
+    print(f"Max singular value comparison plot saved to {plot_filepath}")
+
+def plot_comparison_convergence_diagnostics(all_models_results, output_dir):
+    """
+    Plots a comparison of convergence diagnostics across multiple models.
+    """
+    models_with_data = {name: res for name, res in all_models_results.items() if 'convergence_diagnostics' in res}
+    if not models_with_data: return
+
+    # Find all group keys and metrics across all models
+    all_group_keys = set()
+    for res in models_with_data.values():
+        all_group_keys.update(res['convergence_diagnostics'].keys())
+
+    if not all_group_keys: return
+
+    # Define metrics to plot. Add more if needed.
+    metric_keys = ['delta_norm', 'delta_angle', 'hidden_norm', 'logit_drift']
+    metric_ylabels = {
+        'delta_norm': r'$\|x_{k+1} - x_k\|_2$', 'delta_angle': r'$\cos\angle(\Delta_k, \Delta_{k-1})$',
+        'hidden_norm': r'$\|x_k\|$', 'logit_drift': r'KL$(p_{k-1}\|p_k)$'
+    }
+
+    for group_key in all_group_keys:
+        for metric in metric_keys:
+            plt.figure(figsize=(12, 8))
+            ax = plt.gca()
+            model_colors = plt.cm.get_cmap('tab10', len(models_with_data))
+
+            for i, (model_name, results) in enumerate(models_with_data.items()):
+                diag_data = results['convergence_diagnostics'].get(group_key)
+                if diag_data and metric in diag_data and len(diag_data[metric]) > 0:
+                    data_to_plot = diag_data[metric]
+                    # Handle metrics that skip the first value (like delta_angle)
+                    start_iter = 1 if len(data_to_plot) < len(diag_data['delta_norm']) else 0
+                    iterations = np.arange(start_iter, start_iter + len(data_to_plot))
+                    ax.plot(iterations, data_to_plot, marker='o', linestyle='-', markersize=4, label=model_name, color=model_colors(i))
+
+            ax.set_title(f'Comparison: {metric.replace("_", " ").title()} for {group_key.replace("_", " ")}')
+            ax.set_xlabel('Loop Iteration')
+            ax.set_ylabel(metric_ylabels.get(metric, 'Value'))
+            ax.grid(True, which="both" if metric == 'logit_drift' else "major")
+            if metric == 'logit_drift': ax.set_yscale('log')
+            ax.legend(title="Models")
+            plt.tight_layout()
+            
+            plot_filename = f"comparison_convergence_{group_key}_{metric}.png"
+            plot_filepath = os.path.join(output_dir, plot_filename)
+            plt.savefig(plot_filepath, dpi=300)
+            plt.close()
+            print(f"Saved convergence comparison plot to {plot_filepath}")
+
+def plot_comparison_jacobian_eigenvalues(all_models_results, output_dir):
+    """
+    Plots a comparison of Jacobian eigenvalues across multiple models.
+    """
+    models_with_data = {name: res for name, res in all_models_results.items() if 'jacobian_eigvals' in res}
+    if not models_with_data: return
+
+    all_group_keys = set().union(*(res['jacobian_eigvals'].keys() for res in models_with_data.values()))
+    if not all_group_keys: return
+
+    for group_key in all_group_keys:
+        fig = plt.figure(figsize=(12, 12))
+        ax = fig.add_subplot(111, aspect='equal')
+        unit_circle = mpatches.Circle((0, 0), 1, color='black', fill=False, linestyle='--', alpha=0.5, label='Unit Circle')
+        ax.add_patch(unit_circle)
+        
+        model_colors = plt.cm.get_cmap('tab10', len(models_with_data))
+        max_abs_val = 1.0
+
+        for i, (model_name, results) in enumerate(models_with_data.items()):
+            token_eigvals_list = results['jacobian_eigvals'].get(group_key)
+            if token_eigvals_list:
+                all_eigvals = np.concatenate(token_eigvals_list)
+                if all_eigvals.size > 0:
+                    max_abs_val = max(max_abs_val, np.max(np.abs(all_eigvals)))
+                    ax.scatter(all_eigvals.real, all_eigvals.imag, s=15, alpha=0.5, label=model_name, color=model_colors(i))
+        
+        lim = max_abs_val * 1.1
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_xlabel('Real Part')
+        ax.set_ylabel('Imaginary Part')
+        ax.set_title(f'Comparison: Jacobian Eigenvalue Spectrum for {group_key.replace("_", " ")}')
+        ax.grid(True)
+        ax.axhline(0, color='grey', lw=0.5); ax.axvline(0, color='grey', lw=0.5)
+        ax.legend(title="Models")
+        plt.tight_layout()
+
+        plot_filename = f"comparison_jacobian_eigvals_{group_key}.png"
+        plot_filepath = os.path.join(output_dir, plot_filename)
+        plt.savefig(plot_filepath, dpi=300)
+        plt.close(fig)
+        print(f"Saved Jacobian eigenvalue comparison plot to {plot_filepath}")
+
+def plot_comparison_jacobian_eigenvalue_trajectory(all_models_results, output_dir):
+    """
+    Plots a comparison of Jacobian eigenvalue trajectories across multiple models.
+    """
+    models_with_data = {name: res for name, res in all_models_results.items() if 'jacobian_eigval_trajectory' in res}
+    if not models_with_data: return
+    
+    all_group_keys = set().union(*(res['jacobian_eigval_trajectory'].keys() for res in models_with_data.values()))
+    if not all_group_keys: return
+
+    for group_key in all_group_keys:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        model_colors = plt.cm.get_cmap('tab10', len(models_with_data))
+
+        for i, (model_name, results) in enumerate(models_with_data.items()):
+            token_trajectories = results['jacobian_eigval_trajectory'].get(group_key)
+            if token_trajectories:
+                # To simplify, we plot the mean trajectory over all tokens for each model
+                mean_trajectory = np.mean(token_trajectories, axis=0)
+                if mean_trajectory.size > 0:
+                    iterations = np.arange(len(mean_trajectory))
+                    ax.plot(iterations, mean_trajectory, marker='.', linestyle='-', label=model_name, color=model_colors(i))
+        
+        ax.axhline(1.0, color='r', linestyle='--', label='Stability Boundary (|λ|=1)')
+        ax.set_xlabel('Loop Iteration')
+        ax.set_ylabel('Mean Max Eigenvalue Magnitude |λ|')
+        ax.set_title(f'Comparison: Mean Jacobian Max Eigenvalue Trajectory for {group_key.replace("_", " ")}')
+        ax.grid(True)
+        ax.legend(title="Models")
+        plt.tight_layout()
+
+        plot_filename = f"comparison_jacobian_eigval_trajectory_{group_key}.png"
+        plot_filepath = os.path.join(output_dir, plot_filename)
+        plt.savefig(plot_filepath, dpi=300)
+        plt.close(fig)
+        print(f"Saved Jacobian eigenvalue trajectory comparison to {plot_filepath}")
+
+def plot_comparison_global_diagnostics(all_models_results, output_dir):
+    """
+    Plots a comparison of global diagnostics across multiple models.
+    """
+    models_with_data = {name: res for name, res in all_models_results.items() if 'global_diagnostics' in res}
+    if not models_with_data: return
+
+    metric_keys = ['delta_norm', 'delta_angle', 'hidden_norm', 'logit_drift']
+    metric_ylabels = {
+        'delta_norm': r'$\|x_{k+1} - x_k\|_2$', 'delta_angle': r'$\cos\angle(\Delta_k, \Delta_{k-1})$',
+        'hidden_norm': r'$\|x_k\|$', 'logit_drift': r'KL$(p_{k-1}\|p_k)$'
+    }
+    
+    for metric in metric_keys:
+        plt.figure(figsize=(12, 8))
+        ax = plt.gca()
+        model_colors = plt.cm.get_cmap('tab10', len(models_with_data))
+
+        for i, (model_name, results) in enumerate(models_with_data.items()):
+            diag_data = results['global_diagnostics']
+            if metric in diag_data and len(diag_data[metric]) > 0:
+                data_to_plot = diag_data[metric]
+                start_iter = 1 if len(data_to_plot) < len(diag_data['delta_norm']) else 0
+                steps = np.arange(start_iter, start_iter + len(data_to_plot))
+                ax.plot(steps, data_to_plot, marker='.', linestyle='-', markersize=4, label=model_name, color=model_colors(i))
+
+        ax.set_title(f'Comparison: Global {metric.replace("_", " ").title()}')
+        ax.set_xlabel('Global Step (Layer or Loop Iteration)')
+        ax.set_ylabel(metric_ylabels.get(metric, 'Value'))
+        ax.grid(True, which="both" if metric == 'logit_drift' else "major")
+        if metric == 'logit_drift': ax.set_yscale('log')
+        ax.legend(title="Models")
+        plt.tight_layout()
+        
+        plot_filename = f"comparison_global_{metric}.png"
+        plot_filepath = os.path.join(output_dir, plot_filename)
+        plt.savefig(plot_filepath, dpi=300)
+        plt.close()
+        print(f"Saved global diagnostic comparison plot to {plot_filepath}")
+
+def analyze_single_model(checkpoint_path, output_dir, model_name, args, tokenizer_encode_fn, tokenizer_decode_fn_for_single_id_to_str, wandb_logging_enabled):
+    """
+    Performs a full analysis for a single model checkpoint.
+    """
+    device = torch.device(args.device)
+    results_for_comparison = {}
+
+    print(f"Loading checkpoint from {checkpoint_path}...")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    if 'model_args' not in checkpoint:
+        print(f"Error: 'model_args' not found in checkpoint {checkpoint_path}. Skipping.")
+        return None
+
+    gpt_model_config = checkpoint['model_args']
+    gpt_model_config['loops_representation'] = True
+    gpt_model_config['automatic_loop_exit'] = False
+    if args.track_convergence_diagnostics:
+        gpt_model_config['track_convergence_diagnostics'] = True
+    if args.calculate_jacobian:
+        gpt_model_config['calculate_jacobian'] = True
+    if args.calculate_jacobian_trajectory:
+        gpt_model_config['calculate_jacobian_trajectory'] = True
+    if args.track_global_diagnostics:
+        gpt_model_config['track_global_diagnostics'] = True
+    if args.max_loops_override is not None:
+        gpt_model_config['max_loops'] = args.max_loops_override
+    if 'effective_n_layer' not in gpt_model_config:
+        gpt_model_config['effective_n_layer'] = None
+    if 'loop_groups' not in gpt_model_config:
+        gpt_model_config['loop_groups'] = []
+
+    gptconf = GPTConfig(**gpt_model_config)
+    model = GPT(gptconf)
+    state_dict = checkpoint['model']
+    unwanted_prefix = '_orig_mod.'
+    for k, v in list(state_dict.items()):
+        if k.startswith(unwanted_prefix): state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+    model.load_state_dict(state_dict)
+    model.eval().to(device)
+    print(f"Model: vocab {model.config.vocab_size}, block {model.config.block_size}, n_layer {model.config.n_layer}, max_loops {model.config.max_loops}")
+    if model.config.loop_groups: print(f"Loop groups: {model.config.loop_groups}")
+
+    if args.plot_singular_values:
+        print("\nPlotting maximum singular values of model weights...")
+        max_sv_data = plot_max_singular_values(model, output_dir)
+        results_for_comparison['singular_values'] = max_sv_data
+        if wandb_logging_enabled:
+            wandb.log({f"{model_name}/max_singular_values": wandb.Image(os.path.join(output_dir, "max_singular_values.png"))})
+
+    print(f"Tokenizing prompt: \"{args.prompt}\"")
+    input_ids = tokenizer_encode_fn(args.prompt)
+    if not input_ids:
+        print("Error: Could not tokenize prompt (resulted in empty ID list)."); return None
+    if len(input_ids) > model.config.block_size:
+        input_ids = input_ids[:model.config.block_size]
+        print(f"Prompt truncated to {len(input_ids)} tokens to fit model block size {model.config.block_size}.")
+    prompt_tokens_str = [tokenizer_decode_fn_for_single_id_to_str(id_) for id_ in input_ids]
+    print(f"Token IDs: {input_ids}, Strings: {prompt_tokens_str}")
+    input_tensor = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
+
+    print("Getting loop representations...")
+    with torch.no_grad():
+        outputs = model.generate(input_tensor, max_new_tokens=args.max_new_tokens_for_analysis, return_first_step_loop_reps=True)
+
+    generated_ids = outputs[0] if isinstance(outputs, tuple) else outputs
+    loop_representations_raw, convergence_diagnostics, jacobian_eigvals, jacobian_eigval_trajectory, global_diagnostics = None, None, None, None, None
+    next_output_idx = 1
+    if isinstance(outputs, tuple):
+        if len(outputs) > next_output_idx: loop_representations_raw = outputs[next_output_idx]; next_output_idx += 1
+        if model.config.track_convergence_diagnostics and len(outputs) > next_output_idx: convergence_diagnostics = outputs[next_output_idx]; next_output_idx += 1
+        if model.config.calculate_jacobian and len(outputs) > next_output_idx: jacobian_eigvals = outputs[next_output_idx]; next_output_idx += 1
+        if model.config.calculate_jacobian_trajectory and len(outputs) > next_output_idx: jacobian_eigval_trajectory = outputs[next_output_idx]; next_output_idx += 1
+        if model.config.track_global_diagnostics and len(outputs) > next_output_idx: global_diagnostics = outputs[next_output_idx]
+
+    if not loop_representations_raw:
+        print("Error: No loop representations returned."); return None
+    loop_representations_processed = [r.squeeze(0).cpu() for r in loop_representations_raw]
+    print(f"Collected {len(loop_representations_processed)} sets of loop reps. Shape of first: {loop_representations_processed[0].shape if loop_representations_processed else 'N/A'}")
+    prompt_seq_len = loop_representations_processed[0].shape[0] if loop_representations_processed else 0
+    if prompt_seq_len == 0: print("Error: Zero sequence length from representations."); return None
+
+    if args.calculate_hausdorff_dimension:
+        print("\nCalculating Hausdorff dimension for each token's trajectory (before PCA)...")
+        if len(loop_representations_processed) > 1:
+            hausdorff_dimensions = {}
+            for token_idx in range(prompt_seq_len):
+                trajectory_points = torch.stack([loop_representations_processed[i][token_idx] for i in range(len(loop_representations_processed))]).numpy()
+                dim = box_counting_dimension(trajectory_points)
+                token_str = prompt_tokens_str[token_idx] if token_idx < len(prompt_tokens_str) else f"UNK_{token_idx}"
+                hausdorff_dimensions[f"token_{token_idx}_{token_str}"] = dim
+                print(f"  Token '{token_str}' (pos {token_idx}): Estimated Hausdorff Dimension = {dim:.4f}")
+            results_for_comparison['hausdorff_dimensions'] = hausdorff_dimensions
+            hausdorff_output_path = os.path.join(output_dir, "hausdorff_dimensions.txt")
+            with open(hausdorff_output_path, 'w') as f:
+                f.write("Estimated Hausdorff (Box-Counting) Dimensions:\n")
+                for key, value in hausdorff_dimensions.items(): f.write(f"{key}: {value:.4f}\n")
+            print(f"Hausdorff dimensions saved to {hausdorff_output_path}")
+        else:
+            print("Skipping Hausdorff dimension calculation: not enough loop representations (need > 1).")
+
+    # --- Process and Plot Optional Diagnostics ---
+    if convergence_diagnostics:
+        print("\nPlotting convergence diagnostics...")
+        diagnostics_output_dir = os.path.join(output_dir, "convergence_diagnostics_plots")
+        plot_convergence_diagnostics(convergence_diagnostics, diagnostics_output_dir, model_config=gptconf)
+        diagnostics_data_path = os.path.join(output_dir, "convergence_diagnostics.pkl")
+        with open(diagnostics_data_path, 'wb') as f: pickle.dump(convergence_diagnostics, f)
+        print(f"Convergence diagnostics data saved to {diagnostics_data_path}")
+        results_for_comparison['convergence_diagnostics'] = convergence_diagnostics
+        if wandb_logging_enabled:
+            for group_key in convergence_diagnostics.keys():
+                plot_path = os.path.join(diagnostics_output_dir, f"convergence_diagnostics_{group_key}.png")
+                if os.path.exists(plot_path): wandb.log({f"{model_name}/convergence_diagnostics/{group_key}": wandb.Image(plot_path)})
+
+    if jacobian_eigvals:
+        print("\nPlotting Jacobian eigenvalues...")
+        jacobian_output_dir = os.path.join(output_dir, "jacobian_eigenvalue_plots")
+        plot_jacobian_eigenvalues(jacobian_eigvals, jacobian_output_dir, model_config=gptconf)
+        jacobian_data_path = os.path.join(output_dir, "jacobian_eigenvalues.pkl")
+        with open(jacobian_data_path, 'wb') as f: pickle.dump(jacobian_eigvals, f)
+        print(f"Jacobian eigenvalues data saved to {jacobian_data_path}")
+        results_for_comparison['jacobian_eigvals'] = jacobian_eigvals
+        if wandb_logging_enabled:
+            for group_key in jacobian_eigvals.keys():
+                plot_path = os.path.join(jacobian_output_dir, f"jacobian_eigvals_{group_key}.png")
+                if os.path.exists(plot_path): wandb.log({f"{model_name}/jacobian_eigenvalues/{group_key}": wandb.Image(plot_path)})
+
+    if jacobian_eigval_trajectory:
+        print("\nPlotting Jacobian eigenvalue trajectories...")
+        jacobian_traj_output_dir = os.path.join(output_dir, "jacobian_eigenvalue_plots")
+        plot_jacobian_eigenvalue_trajectory(jacobian_eigval_trajectory, jacobian_traj_output_dir)
+        jacobian_traj_data_path = os.path.join(output_dir, "jacobian_eigval_trajectory.pkl")
+        with open(jacobian_traj_data_path, 'wb') as f: pickle.dump(jacobian_eigval_trajectory, f)
+        print(f"Jacobian eigenvalue trajectory data saved to {jacobian_traj_data_path}")
+        results_for_comparison['jacobian_eigval_trajectory'] = jacobian_eigval_trajectory
+        if wandb_logging_enabled:
+            for group_key in jacobian_eigval_trajectory.keys():
+                plot_path = os.path.join(jacobian_traj_output_dir, f"jacobian_eigval_trajectory_{group_key}.png")
+                if os.path.exists(plot_path): wandb.log({f"{model_name}/jacobian_eigval_trajectory/{group_key}": wandb.Image(plot_path)})
+        
+    if global_diagnostics:
+        print("\nPlotting global diagnostics...")
+        global_diagnostics_output_dir = os.path.join(output_dir, "global_diagnostics_plots")
+        plot_global_diagnostics(global_diagnostics, global_diagnostics_output_dir)
+        global_diagnostics_data_path = os.path.join(output_dir, "global_diagnostics.pkl")
+        with open(global_diagnostics_data_path, 'wb') as f: pickle.dump(global_diagnostics, f)
+        print(f"Global diagnostics data saved to {global_diagnostics_data_path}")
+        results_for_comparison['global_diagnostics'] = global_diagnostics
+        if wandb_logging_enabled:
+            wandb.log({f"{model_name}/global_diagnostics": wandb.Image(os.path.join(global_diagnostics_output_dir, "global_diagnostics.png"))})
+
+    print(f"\nComputing PCA with up to {args.n_pca_components} components...")
+    try:
+        pca_model, transformed_reps_list = compute_pca_and_transform(loop_representations_processed, n_components=args.n_pca_components)
+    except ValueError as e: print(f"Error during PCA: {e}"); return None
+    if not transformed_reps_list: print("PCA resulted in empty list."); return None
+
+    # --- Plotting ---
+    if args.n_pca_components >= 2:
+        reps_for_plotting_2d = [arr[:, :2] for arr in transformed_reps_list]
+        combined_plot_filename_2d = f"pca_trajectories_prompt_2D_pc{min(args.n_pca_components,2)}.png"
+        combined_plot_filepath_2d = os.path.join(output_dir, combined_plot_filename_2d)
+        print(f"Plotting combined 2D PCA trajectories to {combined_plot_filepath_2d}...")
+        plot_pca_trajectories_2d(reps_for_plotting_2d, prompt_tokens_str, combined_plot_filepath_2d, model_config=gptconf)
+        if wandb_logging_enabled:
+            wandb.log({f"{model_name}/pca_trajectories_2d_combined": wandb.Image(combined_plot_filepath_2d)})
+    else:
+        print("Skipping 2D plots as n_pca_components < 2.")
+
+    if args.n_pca_components >= 3:
+        reps_for_plotting_3d = [arr[:, :3] for arr in transformed_reps_list]
+        combined_plot_filename_3d = f"pca_trajectories_prompt_3D_pc{min(args.n_pca_components,3)}.png"
+        combined_plot_filepath_3d = os.path.join(output_dir, combined_plot_filename_3d)
+        print(f"Plotting combined 3D PCA trajectories to {combined_plot_filepath_3d}...")
+        plot_pca_trajectories_3d(reps_for_plotting_3d, prompt_tokens_str, combined_plot_filepath_3d, model_config=gptconf)
+        if wandb_logging_enabled:
+            wandb.log({f"{model_name}/pca_trajectories_3d_combined": wandb.Image(combined_plot_filepath_3d)})
+    else:
+        print("Skipping 3D plots as n_pca_components < 3.")
+
+    individual_plots_dir = os.path.join(output_dir, "individual_token_plots")
+    os.makedirs(individual_plots_dir, exist_ok=True)
+    print(f"Plotting individual token PCA trajectories to {individual_plots_dir}...")
+    num_available_loops = len(transformed_reps_list)
+    for token_idx in range(prompt_seq_len):
+        token_str = prompt_tokens_str[token_idx] if token_idx < len(prompt_tokens_str) else f"UNK_{token_idx}"
+        sanitized_token_str = sanitize_filename_part(token_str if token_str != '?' else f"UNK_{token_idx}")
+        if args.n_pca_components >=2:
+            filename_2d_full = f"token_{token_idx}_{sanitized_token_str}_pca_2D_full.png"
+            filepath_2d_full = os.path.join(individual_plots_dir, filename_2d_full)
+            plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_2d_full, is_3d_plot=False, model_config=gptconf)
+            if wandb_logging_enabled: wandb.log({f"{model_name}/individual_plots/2d_full_token_{token_idx}": wandb.Image(filepath_2d_full)})
+            if num_available_loops > args.num_last_steps_for_zoom:
+                filename_2d_zoomed = f"token_{token_idx}_{sanitized_token_str}_pca_2D_zoomed_last{args.num_last_steps_for_zoom}.png"
+                filepath_2d_zoomed = os.path.join(individual_plots_dir, filename_2d_zoomed)
+                plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_2d_zoomed, is_3d_plot=False, is_zoomed_view=True, num_last_steps_to_zoom=args.num_last_steps_for_zoom, model_config=gptconf)
+                if wandb_logging_enabled: wandb.log({f"{model_name}/individual_plots/2d_zoomed_token_{token_idx}": wandb.Image(filepath_2d_zoomed)})
+        if args.n_pca_components >=3:
+            filename_3d_full = f"token_{token_idx}_{sanitized_token_str}_pca_3D_full.png"
+            filepath_3d_full = os.path.join(individual_plots_dir, filename_3d_full)
+            plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_3d_full, is_3d_plot=True, model_config=gptconf)
+            if wandb_logging_enabled: wandb.log({f"{model_name}/individual_plots/3d_full_token_{token_idx}": wandb.Image(filepath_3d_full)})
+            if num_available_loops > args.num_last_steps_for_zoom:
+                filename_3d_zoomed = f"token_{token_idx}_{sanitized_token_str}_pca_3D_zoomed_last{args.num_last_steps_for_zoom}.png"
+                filepath_3d_zoomed = os.path.join(individual_plots_dir, filename_3d_zoomed)
+                plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_3d_zoomed, is_3d_plot=True, is_zoomed_view=True, num_last_steps_to_zoom=args.num_last_steps_for_zoom, model_config=gptconf)
+                if wandb_logging_enabled: wandb.log({f"{model_name}/individual_plots/3d_zoomed_token_{token_idx}": wandb.Image(filepath_3d_zoomed)})
+
+    return results_for_comparison
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze and visualize loop representations from a GPT model using PCA.")
-    parser.add_argument('--checkpoint_path', type=str, required=True, help='Full path to the model checkpoint (.pt file)')
+    parser.add_argument('--checkpoint_paths', type=str, nargs='+', required=True, help='One or more full paths to model checkpoint (.pt files)')
     parser.add_argument('--prompt', type=str, default="Hello world, this is a test.", help='Input prompt string')
     parser.add_argument('--output_dir', type=str, default='representation_analysis_output', help='Directory to save plots')
     parser.add_argument('--meta_path', type=str, default='data/fineweb/meta.pkl', help='Path to meta.pkl for tokenizer')
@@ -828,320 +1322,76 @@ def main():
         # This allows logging analysis artifacts to the same run as training.
         wandb.init(project=args.wandb_project, name=args.wandb_run_name, id=args.wandb_run_name, resume="allow")
 
-    print(f"Loading checkpoint from {args.checkpoint_path}...")
-    checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
-    if 'model_args' not in checkpoint:
-        print("Error: 'model_args' not found in checkpoint."); return
-    
-    # Store model_args to pass to plotting functions
-    gpt_model_config = checkpoint['model_args']
-    # Convert dict to a class-like object if it's a dict, for attribute access like model_config.loop_groups
-    # Or ensure gptconf = GPTConfig(**gpt_model_config) is the source of truth
-    
-    gpt_model_config['loops_representation'] = True
-    gpt_model_config['automatic_loop_exit'] = False
-    if args.track_convergence_diagnostics:
-        gpt_model_config['track_convergence_diagnostics'] = True
-    if args.calculate_jacobian:
-        gpt_model_config['calculate_jacobian'] = True
-    if args.calculate_jacobian_trajectory:
-        gpt_model_config['calculate_jacobian_trajectory'] = True
-    if args.track_global_diagnostics:
-        gpt_model_config['track_global_diagnostics'] = True
-    if args.max_loops_override is not None:
-        gpt_model_config['max_loops'] = args.max_loops_override
-    if 'effective_n_layer' not in gpt_model_config:
-         gpt_model_config['effective_n_layer'] = None 
-    
-    # Ensure loop_groups is part of gpt_model_config if it exists in the checkpoint,
-    # or set to None/empty if not, so plotting functions can check for it.
-    # GPTConfig might create it as an attribute.
-    if 'loop_groups' not in gpt_model_config:
-        gpt_model_config['loop_groups'] = [] # Default to empty list if not present
-
-    gptconf = GPTConfig(**gpt_model_config)
-    model = GPT(gptconf)
-    state_dict = checkpoint['model']
-    unwanted_prefix = '_orig_mod.'
-    for k, v in list(state_dict.items()):
-        if k.startswith(unwanted_prefix): state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-    model.load_state_dict(state_dict)
-    model.eval().to(device)
-    print(f"Model: vocab {model.config.vocab_size}, block {model.config.block_size}, n_layer {model.config.n_layer}, max_loops {model.config.max_loops}")
-    if model.config.loop_groups: print(f"Loop groups: {model.config.loop_groups}")
-
-    # --- Plot Singular Values if requested ---
-    if args.plot_singular_values:
-        print("\nPlotting maximum singular values of model weights...")
-        plot_max_singular_values(model, args.output_dir)
-        if wandb_logging_enabled:
-            wandb.log({"max_singular_values": wandb.Image(os.path.join(args.output_dir, "max_singular_values.png"))})
-
+    # --- Tokenizer Loading ---
     print(f"Loading tokenizer from {args.meta_path}...")
-    tokenizer_encode_fn = None
-    # Function that takes one ID and returns its string representation
-    tokenizer_decode_fn_for_single_id_to_str = None
-
+    tokenizer_encode_fn, tokenizer_decode_fn_for_single_id_to_str = None, None
     try:
-        with open(args.meta_path, 'rb') as f:
-            meta = pickle.load(f)
-
-        # Try to use encode/decode methods from the loaded meta object first
-        # meta is a dictionary, so check for keys and then if the values are callable
-        if 'encode' in meta and callable(meta['encode']) and \
-           'decode' in meta and callable(meta['decode']):
+        with open(args.meta_path, 'rb') as f: meta = pickle.load(f)
+        if 'encode' in meta and callable(meta['encode']) and 'decode' in meta and callable(meta['decode']):
             print("Using encode/decode methods from meta.pkl (expected for BPE/SentencePiece).")
-            tokenizer_encode_fn = meta['encode'] # Should take string, return list of IDs
-            # meta.decode typically takes a list of IDs and returns a single string.
-            # For prompt_tokens_str, we need string for each token.
+            tokenizer_encode_fn = meta['encode']
             tokenizer_decode_fn_for_single_id_to_str = lambda token_id: meta['decode']([token_id])
         else:
-            # Fallback to stoi/itos, assuming character-level if meta.encode/decode not found
-            print("Warning: meta.pkl does not provide .encode/.decode methods. "
-                  "Attempting to use 'stoi' and 'itos' from meta.pkl. "
-                  "This is likely character-level tokenization if 'encode'/'decode' are missing.")
+            print("Warning: meta.pkl does not provide .encode/.decode methods. Attempting to use 'stoi' and 'itos'.")
             if 'stoi' not in meta or 'itos' not in meta:
-                print(f"Error: meta.pkl is missing 'stoi'/'itos' and also "
-                      "lacks .encode/.decode methods. Cannot proceed with tokenization.")
-                return
-            
+                print(f"Error: meta.pkl is missing 'stoi'/'itos' and also lacks .encode/.decode methods."); return
             stoi, itos = meta['stoi'], meta['itos']
-            # This encode is character-by-character, as originally in the script
             tokenizer_encode_fn = lambda s: [stoi[c] for c in s if c in stoi]
-            # This gets the string for a single ID
             tokenizer_decode_fn_for_single_id_to_str = lambda token_id: itos.get(token_id, '?')
-
-    except FileNotFoundError:
-        print(f"Error: Tokenizer meta file not found at {args.meta_path}"); return
-    except pickle.UnpicklingError:
-        print(f"Error: Could not unpickle tokenizer meta file from {args.meta_path}"); return
-    except Exception as e:
-        print(f"Error loading or initializing tokenizer from {args.meta_path}: {e}"); return
-
+    except FileNotFoundError: print(f"Error: Tokenizer meta file not found at {args.meta_path}"); return
+    except Exception as e: print(f"Error loading or initializing tokenizer from {args.meta_path}: {e}"); return
     if not tokenizer_encode_fn or not tokenizer_decode_fn_for_single_id_to_str:
-        print("Tokenizer functions not initialized. Exiting.")
-        return
+        print("Tokenizer functions not initialized. Exiting."); return
 
-    print(f"Tokenizing prompt: \"{args.prompt}\"")
-    # Use the selected encode function
-    input_ids = tokenizer_encode_fn(args.prompt)
+    # --- Model Analysis Loop ---
+    all_models_results = {}
+    for checkpoint_path in args.checkpoint_paths:
+        model_name = sanitize_filename_part(os.path.basename(checkpoint_path).replace('.pt', ''))
+        print(f"\n{'='*80}")
+        print(f"Analyzing model: {model_name} from {checkpoint_path}")
+        print(f"{'='*80}")
 
-    if not input_ids:
-        print("Error: Could not tokenize prompt (resulted in empty ID list)."); return
-    
-    if len(input_ids) > model.config.block_size:
-        input_ids = input_ids[:model.config.block_size]
-        print(f"Prompt truncated to {len(input_ids)} tokens to fit model block size {model.config.block_size}.")
-    
-    # Generate string representations for each token ID
-    prompt_tokens_str = [tokenizer_decode_fn_for_single_id_to_str(id_) for id_ in input_ids]
-    print(f"Token IDs: {input_ids}, Strings: {prompt_tokens_str}")
+        model_output_dir = os.path.join(args.output_dir, model_name)
+        os.makedirs(model_output_dir, exist_ok=True)
 
-    # Convert IDs to tensor for the model
-    input_tensor = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
-
-    print("Getting loop representations...")
-    with torch.no_grad():
-        # Call generate, which might return more than 2 values now
-        outputs = model.generate(
-            input_tensor, 
-            max_new_tokens=args.max_new_tokens_for_analysis, 
-            return_first_step_loop_reps=True
+        results = analyze_single_model(
+            checkpoint_path=checkpoint_path,
+            output_dir=model_output_dir,
+            model_name=model_name,
+            args=args,
+            tokenizer_encode_fn=tokenizer_encode_fn,
+            tokenizer_decode_fn_for_single_id_to_str=tokenizer_decode_fn_for_single_id_to_str,
+            wandb_logging_enabled=wandb_logging_enabled,
         )
+        if results:
+            all_models_results[model_name] = results
 
-    # Unpack outputs carefully
-    generated_ids = outputs[0] if isinstance(outputs, tuple) else outputs
-    loop_representations_raw = None
-    convergence_diagnostics = None
-    jacobian_eigvals = None
-    jacobian_eigval_trajectory = None
-    global_diagnostics = None
-    
-    next_output_idx = 1
-    if isinstance(outputs, tuple):
-        # The first optional return is always loop_representations because return_first_step_loop_reps=True
-        if len(outputs) > next_output_idx:
-            loop_representations_raw = outputs[next_output_idx]
-            next_output_idx += 1
+    # --- Comparison Plotting ---
+    if len(all_models_results) > 1:
+        print(f"\n{'='*80}")
+        print("Generating comparison plots for all models...")
+        print(f"{'='*80}")
+        comparison_output_dir = os.path.join(args.output_dir, "comparison_plots")
+        os.makedirs(comparison_output_dir, exist_ok=True)
         
-        # Check for other optional returns based on config flags
-        if model.config.track_convergence_diagnostics and len(outputs) > next_output_idx:
-            convergence_diagnostics = outputs[next_output_idx]
-            next_output_idx += 1
+        # Here you would call new comparison plotting functions.
+        # Example: plot_comparison_hausdorff(all_models_results, comparison_output_dir)
+        # These will be added in a future step.
+        print(f"Comparison plots will be saved in {comparison_output_dir}")
+        if args.calculate_hausdorff_dimension:
+            plot_comparison_hausdorff(all_models_results, comparison_output_dir)
+        if args.plot_singular_values:
+            plot_comparison_singular_values(all_models_results, comparison_output_dir)
+        if args.track_convergence_diagnostics:
+            plot_comparison_convergence_diagnostics(all_models_results, comparison_output_dir)
+        if args.calculate_jacobian:
+            plot_comparison_jacobian_eigenvalues(all_models_results, comparison_output_dir)
+        if args.calculate_jacobian_trajectory:
+            plot_comparison_jacobian_eigenvalue_trajectory(all_models_results, comparison_output_dir)
+        if args.track_global_diagnostics:
+            plot_comparison_global_diagnostics(all_models_results, comparison_output_dir)
 
-        if model.config.calculate_jacobian and len(outputs) > next_output_idx:
-            jacobian_eigvals = outputs[next_output_idx]
-            next_output_idx += 1
-            
-        if model.config.calculate_jacobian_trajectory and len(outputs) > next_output_idx:
-            jacobian_eigval_trajectory = outputs[next_output_idx]
-            next_output_idx += 1
-
-        if model.config.track_global_diagnostics and len(outputs) > next_output_idx:
-            global_diagnostics = outputs[next_output_idx]
-
-    if not loop_representations_raw:
-        print("Error: No loop representations returned."); return
-    loop_representations_processed = [r.squeeze(0).cpu() for r in loop_representations_raw]
-    print(f"Collected {len(loop_representations_processed)} sets of loop reps. Shape of first: {loop_representations_processed[0].shape if loop_representations_processed else 'N/A'}")
-    prompt_seq_len = loop_representations_processed[0].shape[0] if loop_representations_processed else 0
-    if prompt_seq_len == 0: print("Error: Zero sequence length from representations."); return
-
-    if args.calculate_hausdorff_dimension:
-        print("\nCalculating Hausdorff dimension for each token's trajectory (before PCA)...")
-        if len(loop_representations_processed) > 1:
-            hausdorff_dimensions = {}
-            for token_idx in range(prompt_seq_len):
-                trajectory_points = torch.stack([loop_representations_processed[i][token_idx] for i in range(len(loop_representations_processed))]).numpy()
-                
-                dim = box_counting_dimension(trajectory_points)
-                
-                token_str = prompt_tokens_str[token_idx] if token_idx < len(prompt_tokens_str) else f"UNK_{token_idx}"
-                hausdorff_dimensions[f"token_{token_idx}_{token_str}"] = dim
-                print(f"  Token '{token_str}' (pos {token_idx}): Estimated Hausdorff Dimension = {dim:.4f}")
-
-            hausdorff_output_path = os.path.join(args.output_dir, "hausdorff_dimensions.txt")
-            with open(hausdorff_output_path, 'w') as f:
-                f.write("Estimated Hausdorff (Box-Counting) Dimensions:\n")
-                for key, value in hausdorff_dimensions.items():
-                    f.write(f"{key}: {value:.4f}\n")
-            print(f"Hausdorff dimensions saved to {hausdorff_output_path}")
-        else:
-            print("Skipping Hausdorff dimension calculation: not enough loop representations (need > 1).")
-
-    # --- Process and Plot Optional Diagnostics ---
-    if convergence_diagnostics:
-        print("\nPlotting convergence diagnostics...")
-        diagnostics_output_dir = os.path.join(args.output_dir, "convergence_diagnostics_plots")
-        plot_convergence_diagnostics(convergence_diagnostics, diagnostics_output_dir, model_config=gptconf)
-        # Save raw data
-        diagnostics_data_path = os.path.join(args.output_dir, "convergence_diagnostics.pkl")
-        with open(diagnostics_data_path, 'wb') as f:
-            pickle.dump(convergence_diagnostics, f)
-        print(f"Convergence diagnostics data saved to {diagnostics_data_path}")
-        if wandb_logging_enabled:
-            for group_key in convergence_diagnostics.keys():
-                plot_path = os.path.join(diagnostics_output_dir, f"convergence_diagnostics_{group_key}.png")
-                if os.path.exists(plot_path):
-                    wandb.log({f"convergence_diagnostics/{group_key}": wandb.Image(plot_path)})
-
-    if jacobian_eigvals:
-        print("\nPlotting Jacobian eigenvalues...")
-        jacobian_output_dir = os.path.join(args.output_dir, "jacobian_eigenvalue_plots")
-        plot_jacobian_eigenvalues(jacobian_eigvals, jacobian_output_dir, model_config=gptconf)
-        # Save raw data
-        jacobian_data_path = os.path.join(args.output_dir, "jacobian_eigenvalues.pkl")
-        with open(jacobian_data_path, 'wb') as f:
-            pickle.dump(jacobian_eigvals, f)
-        print(f"Jacobian eigenvalues data saved to {jacobian_data_path}")
-        if wandb_logging_enabled:
-            for group_key in jacobian_eigvals.keys():
-                plot_path = os.path.join(jacobian_output_dir, f"jacobian_eigvals_{group_key}.png")
-                if os.path.exists(plot_path):
-                    wandb.log({f"jacobian_eigenvalues/{group_key}": wandb.Image(plot_path)})
-
-    if jacobian_eigval_trajectory:
-        print("\nPlotting Jacobian eigenvalue trajectories...")
-        jacobian_traj_output_dir = os.path.join(args.output_dir, "jacobian_eigenvalue_plots")
-        plot_jacobian_eigenvalue_trajectory(jacobian_eigval_trajectory, jacobian_traj_output_dir)
-        # Save raw data
-        jacobian_traj_data_path = os.path.join(args.output_dir, "jacobian_eigval_trajectory.pkl")
-        with open(jacobian_traj_data_path, 'wb') as f:
-            pickle.dump(jacobian_eigval_trajectory, f)
-        print(f"Jacobian eigenvalue trajectory data saved to {jacobian_traj_data_path}")
-        if wandb_logging_enabled:
-            for group_key in jacobian_eigval_trajectory.keys():
-                plot_path = os.path.join(jacobian_traj_output_dir, f"jacobian_eigval_trajectory_{group_key}.png")
-                if os.path.exists(plot_path):
-                    wandb.log({f"jacobian_eigval_trajectory/{group_key}": wandb.Image(plot_path)})
-        
-    if global_diagnostics:
-        print("\nPlotting global diagnostics...")
-        global_diagnostics_output_dir = os.path.join(args.output_dir, "global_diagnostics_plots")
-        plot_global_diagnostics(global_diagnostics, global_diagnostics_output_dir)
-        # Save raw data
-        global_diagnostics_data_path = os.path.join(args.output_dir, "global_diagnostics.pkl")
-        with open(global_diagnostics_data_path, 'wb') as f:
-            pickle.dump(global_diagnostics, f)
-        print(f"Global diagnostics data saved to {global_diagnostics_data_path}")
-        if wandb_logging_enabled:
-            wandb.log({"global_diagnostics": wandb.Image(os.path.join(global_diagnostics_output_dir, "global_diagnostics.png"))})
-
-    print(f"\nComputing PCA with up to {args.n_pca_components} components...")
-    try:
-        pca_model, transformed_reps_list = compute_pca_and_transform(loop_representations_processed, n_components=args.n_pca_components)
-    except ValueError as e: print(f"Error during PCA: {e}"); return
-    if not transformed_reps_list: print("PCA resulted in empty list."); return
-
-    # --- Plotting ---
-    # 2D Plots
-    if args.n_pca_components >= 2:
-        reps_for_plotting_2d = [arr[:, :2] for arr in transformed_reps_list]
-        combined_plot_filename_2d = f"pca_trajectories_prompt_2D_pc{min(args.n_pca_components,2)}.png"
-        combined_plot_filepath_2d = os.path.join(args.output_dir, combined_plot_filename_2d)
-        print(f"Plotting combined 2D PCA trajectories to {combined_plot_filepath_2d}...")
-        plot_pca_trajectories_2d(reps_for_plotting_2d, prompt_tokens_str, combined_plot_filepath_2d, model_config=gptconf)
-        if wandb_logging_enabled:
-            wandb.log({"pca_trajectories_2d_combined": wandb.Image(combined_plot_filepath_2d)})
-    else:
-        print("Skipping 2D plots as n_pca_components < 2.")
-
-    # 3D Plots
-    if args.n_pca_components >= 3:
-        reps_for_plotting_3d = [arr[:, :3] for arr in transformed_reps_list]
-        combined_plot_filename_3d = f"pca_trajectories_prompt_3D_pc{min(args.n_pca_components,3)}.png"
-        combined_plot_filepath_3d = os.path.join(args.output_dir, combined_plot_filename_3d)
-        print(f"Plotting combined 3D PCA trajectories to {combined_plot_filepath_3d}...")
-        plot_pca_trajectories_3d(reps_for_plotting_3d, prompt_tokens_str, combined_plot_filepath_3d, model_config=gptconf)
-        if wandb_logging_enabled:
-            wandb.log({"pca_trajectories_3d_combined": wandb.Image(combined_plot_filepath_3d)})
-    else:
-        print("Skipping 3D plots as n_pca_components < 3.")
-
-    individual_plots_dir = os.path.join(args.output_dir, "individual_token_plots")
-    os.makedirs(individual_plots_dir, exist_ok=True)
-    print(f"Plotting individual token PCA trajectories to {individual_plots_dir}...")
-
-    for token_idx in range(prompt_seq_len):
-        token_str = prompt_tokens_str[token_idx] if token_idx < len(prompt_tokens_str) else f"UNK_{token_idx}"
-        sanitized_token_str = sanitize_filename_part(token_str if token_str != '?' else f"UNK_{token_idx}")
-        num_available_loops = len(transformed_reps_list)
-
-        # Individual 2D plots (full and zoomed)
-        if args.n_pca_components >=2:
-            filename_2d_full = f"token_{token_idx}_{sanitized_token_str}_pca_2D_full.png"
-            filepath_2d_full = os.path.join(individual_plots_dir, filename_2d_full)
-            plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_2d_full, 
-                                             is_3d_plot=False, is_zoomed_view=False, model_config=gptconf)
-            if wandb_logging_enabled:
-                wandb.log({f"individual_plots/2d_full_token_{token_idx}": wandb.Image(filepath_2d_full)})
-
-            if num_available_loops > args.num_last_steps_for_zoom:
-                filename_2d_zoomed = f"token_{token_idx}_{sanitized_token_str}_pca_2D_zoomed_last{args.num_last_steps_for_zoom}.png"
-                filepath_2d_zoomed = os.path.join(individual_plots_dir, filename_2d_zoomed)
-                plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_2d_zoomed, 
-                                                 is_3d_plot=False, is_zoomed_view=True, num_last_steps_to_zoom=args.num_last_steps_for_zoom, model_config=gptconf)
-                if wandb_logging_enabled:
-                    wandb.log({f"individual_plots/2d_zoomed_token_{token_idx}": wandb.Image(filepath_2d_zoomed)})
-        
-        # Individual 3D plots (full and zoomed)
-        if args.n_pca_components >=3:
-            filename_3d_full = f"token_{token_idx}_{sanitized_token_str}_pca_3D_full.png"
-            filepath_3d_full = os.path.join(individual_plots_dir, filename_3d_full)
-            plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_3d_full, 
-                                             is_3d_plot=True, is_zoomed_view=False, model_config=gptconf)
-            if wandb_logging_enabled:
-                wandb.log({f"individual_plots/3d_full_token_{token_idx}": wandb.Image(filepath_3d_full)})
-
-            if num_available_loops > args.num_last_steps_for_zoom:
-                filename_3d_zoomed = f"token_{token_idx}_{sanitized_token_str}_pca_3D_zoomed_last{args.num_last_steps_for_zoom}.png"
-                filepath_3d_zoomed = os.path.join(individual_plots_dir, filename_3d_zoomed)
-                plot_single_token_pca_trajectory(transformed_reps_list, token_idx, token_str, filepath_3d_zoomed, 
-                                                 is_3d_plot=True, is_zoomed_view=True, num_last_steps_for_zoom=args.num_last_steps_for_zoom, model_config=gptconf)
-                if wandb_logging_enabled:
-                    wandb.log({f"individual_plots/3d_zoomed_token_{token_idx}": wandb.Image(filepath_3d_zoomed)})
-
-    print("Analysis complete.")
+    print("\nAnalysis complete.")
 
     if wandb_logging_enabled:
         wandb.finish()
