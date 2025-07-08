@@ -1,0 +1,10 @@
+Hello world, this is a test.
+The quick brown fox jumps over the lazy dog.
+A transformer is a deep learning model that uses self-attention.
+What is the meaning of life?
+This script loads a pre-trained GPT model.
+Comedy is a just a story with a happy ending.
+The rain in Spain stays mainly in the plain.
+Artificial intelligence is changing the world.
+To be or not to be, that is the question.
+All that glitters is not gold. 

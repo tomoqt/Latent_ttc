@@ -388,7 +388,7 @@ class GPT(nn.Module):
                     x_pass_input = current_loop_iteration_input
 
                     # Apply noise ONLY if actually looping (num_loops > 1) and it's the first iteration
-                    if num_loops_for_this_group > 1 and loop_iter_idx == 0: #and self.config.loop_noise_scale > 0.0:
+                    if num_loops_for_this_group > 1 and loop_iter_idx == 0 and self.config.loop_noise_scale > 0.0:
                         # noise = torch.randn_like(x_pass_input) * self.config.loop_noise_scale
                         # New noise initialization with specified variance
                         variance_noise = 2.0 / (5 * self.config.n_embd)
@@ -405,6 +405,10 @@ class GPT(nn.Module):
                             x_pass_input = torch.cat([x_original_group_input, x_pass_input], dim=-1) # x_pass_input is previous loop's output
                         else:
                             x_pass_input = x_original_group_input + x_pass_input # x_pass_input is previous loop's output
+                    # Case for first multi-loop iteration without noise
+                    elif num_loops_for_this_group > 1 and loop_iter_idx == 0 and self.config.loop_noise_scale == 0.0:
+                        if self.concatenate_initial_representation:
+                            x_pass_input = torch.cat([x_pass_input, x_pass_input], dim=-1)
                     
                     # Adapt dimensionality if concatenation is on
                     needs_adapter = False
@@ -416,11 +420,9 @@ class GPT(nn.Module):
                              needs_adapter = True
                         # Case 2: Multi-loop (num_loops_for_this_group > 1)
                         elif num_loops_for_this_group > 1:
-                            if loop_iter_idx == 0 and self.config.loop_noise_scale == 0.0: # First multi-loop iter, no noise
-                                x_pass_input = torch.cat([x_pass_input, x_pass_input], dim=-1)
-                                needs_adapter = True
-                            elif loop_iter_idx > 0 or (loop_iter_idx == 0 and self.config.loop_noise_scale > 0.0): # Subsequent or first-with-noise
-                                needs_adapter = True 
+                            # The logic to prepare x_pass_input is now handled above.
+                            # For multi-loop with concatenation, adapter is always needed.
+                            needs_adapter = True
                     
                     # Determine whether this iteration should contribute gradients.
                     grad_this_iter = True

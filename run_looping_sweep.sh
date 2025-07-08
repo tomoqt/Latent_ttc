@@ -55,11 +55,16 @@ run_experiment() {
     if [ -f "$checkpoint_path" ]; then
         echo "--- Starting Analysis for $run_name ---"
         python analyze_loop_representations.py \
-            --checkpoint_path "$checkpoint_path" \
+            --checkpoint_paths "$checkpoint_path" \
             --output_dir "$analysis_out_dir" \
             --wandb_project "$WANDB_PROJECT" \
             --wandb_run_name "$run_name" \
-            --plot_singular_values
+            --plot_singular_values \
+            --calculate_hausdorff_dimension \
+            --track_convergence_diagnostics \
+            --calculate_jacobian \
+            --calculate_jacobian_trajectory \
+            --track_global_diagnostics
         echo "--- Analysis Finished for $run_name ---"
     else
         echo "!!! Checkpoint file not found at $checkpoint_path. Skipping analysis. !!!"
