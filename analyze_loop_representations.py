@@ -630,6 +630,7 @@ def plot_aggregated_convergence_diagnostics(aggregated_diagnostics_data, output_
 
     os.makedirs(output_dir, exist_ok=True)
 
+    saved_paths = {}
     for group_key, metrics in aggregated_diagnostics_data.items():
         if not metrics or 'delta_norm' not in metrics or 'mean' not in metrics['delta_norm'] or metrics['delta_norm']['mean'] is None:
             print(f"Skipping aggregated plot for {group_key} due to missing data.")
@@ -679,6 +680,8 @@ def plot_aggregated_convergence_diagnostics(aggregated_diagnostics_data, output_
         plt.savefig(plot_filepath, dpi=300)
         plt.close(fig)
         print(f"Aggregated convergence diagnostics plot saved to {plot_filepath}")
+        saved_paths[group_key] = plot_filepath
+    return saved_paths
 
 def plot_jacobian_eigenvalues(eigenvalue_data, output_dir, model_config):
     """
@@ -1505,11 +1508,18 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
     
     if args.track_convergence_diagnostics and 'convergence_diagnostics' in results_for_comparison:
         print("\nPlotting aggregated convergence diagnostics for this model...")
-        plot_aggregated_convergence_diagnostics(
+        paths = plot_aggregated_convergence_diagnostics(
             results_for_comparison['convergence_diagnostics'],
             aggregated_output_dir,
             model_name
         )
+        if wandb_logging_enabled and paths:
+            log_dict = {}
+            for group_key, path in paths.items():
+                if path and os.path.exists(str(path)):
+                    log_dict[f"{model_name}/aggregated_convergence/{group_key}"] = wandb.Image(path)
+            if log_dict:
+                wandb.log(log_dict)
 
     return results_for_comparison
 

@@ -112,11 +112,12 @@ fi
 N_PCA_COMPONENTS="${N_PCA_COMPONENTS:-3}"
 MAX_NEW_TOKENS_FOR_ANALYSIS="${MAX_NEW_TOKENS_FOR_ANALYSIS:-1}"
 
-# Focus solely on Hausdorff dimension; keep other diagnostics off by default
-TRACK_CONV_DX="${TRACK_CONV_DX:-False}"
+# Enable additional diagnostics by default so they get logged and compared across checkpoints
+TRACK_CONV_DX="${TRACK_CONV_DX:-True}"
 CALC_JACOBIAN="${CALC_JACOBIAN:-False}"
 CALC_JACOBIAN_TRAJ="${CALC_JACOBIAN_TRAJ:-False}"
-TRACK_GLOBAL_DX="${TRACK_GLOBAL_DX:-False}"
+TRACK_GLOBAL_DX="${TRACK_GLOBAL_DX:-True}"
+PLOT_SINGULAR_VALUES="${PLOT_SINGULAR_VALUES:-True}"
 
 # WandB logging for analysis (enabled by default to track Hausdorff across checkpoints)
 WANDB_PROJECT_ANALYSIS="${WANDB_PROJECT_ANALYSIS:-gpt2-looped-analysis}"
@@ -133,6 +134,7 @@ set -x
   --n_pca_components "${N_PCA_COMPONENTS}" \
   --max_new_tokens_for_analysis "${MAX_NEW_TOKENS_FOR_ANALYSIS}" \
   --calculate_hausdorff_dimension \
+  $( [[ "$PLOT_SINGULAR_VALUES" == "True" ]] && echo --plot_singular_values || true ) \
   $( [[ "$TRACK_CONV_DX" == "True" ]] && echo --track_convergence_diagnostics || true ) \
   $( [[ "$CALC_JACOBIAN" == "True" ]] && echo --calculate_jacobian || true ) \
   $( [[ "$CALC_JACOBIAN_TRAJ" == "True" ]] && echo --calculate_jacobian_trajectory || true ) \
