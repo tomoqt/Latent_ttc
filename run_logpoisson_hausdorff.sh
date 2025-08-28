@@ -133,7 +133,6 @@ set -x
   --n_pca_components "${N_PCA_COMPONENTS}" \
   --max_new_tokens_for_analysis "${MAX_NEW_TOKENS_FOR_ANALYSIS}" \
   --calculate_hausdorff_dimension \
-  --hausdorff_after_pca \
   --only_hausdorff \
   $( [[ "$TRACK_CONV_DX" == "True" ]] && echo --track_convergence_diagnostics || true ) \
   $( [[ "$CALC_JACOBIAN" == "True" ]] && echo --calculate_jacobian || true ) \
