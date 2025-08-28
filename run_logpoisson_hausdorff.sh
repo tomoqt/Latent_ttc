@@ -45,22 +45,36 @@ LOOP_SAMPLING_STRATEGY="${LOOP_SAMPLING_STRATEGY:-log_poisson}"
 LOOP_SAMPLING_RBAR="${LOOP_SAMPLING_RBAR:-32}"
 
 # Enable/disable wandb during training (config/train_gpt2.py turns it on by default)
-WANDB_LOG_TRAIN="${WANDB_LOG_TRAIN:-False}"
-WANDB_PROJECT_TRAIN="${WANDB_PROJECT_TRAIN:-owt}"
+WANDB_LOG_TRAIN="${WANDB_LOG_TRAIN:-True}"
+WANDB_PROJECT_TRAIN="${WANDB_PROJECT_TRAIN:-loops-analysis}"
 WANDB_RUN_NAME_TRAIN="${WANDB_RUN_NAME_TRAIN:-${EXP_NAME}-train}"
 
-echo "=== Starting training to ${OUT_DIR} (max_iters=${MAX_ITERS}) ==="
-set -x
-"${PYTHON_BIN}" -u "${TRAIN_PY}" "${GPT2_CFG}" \
-  --wandb_log="${WANDB_LOG_TRAIN}" --wandb_project="${WANDB_PROJECT_TRAIN}" --wandb_run_name="${WANDB_RUN_NAME_TRAIN}" \
-  --max_iters="${MAX_ITERS}" --lr_decay_iters="${LR_DECAY_ITERS}" \
-  --eval_interval="${EVAL_INTERVAL}" --eval_iters="${EVAL_ITERS}" --log_interval="${LOG_INTERVAL}" \
-  --use_baseline_model=False \
-  --loop_sampling_strategy="${LOOP_SAMPLING_STRATEGY}" \
-  --loop_sampling_rbar="${LOOP_SAMPLING_RBAR}"
-set +x
+# Check if checkpoints already exist; if so, skip training
+mapfile -t EXISTING_CKPTS_PRE < <(ls -1v "${OUT_DIR}"/ckpt_*.pt 2>/dev/null || true)
+HAS_LAST_PRE=false; [[ -f "${OUT_DIR}/ckpt.pt" ]] && HAS_LAST_PRE=true
 
-echo "=== Training finished or interrupted; proceeding with analysis ==="
+DID_TRAIN=0
+if [[ ${#EXISTING_CKPTS_PRE[@]} -gt 0 || "$HAS_LAST_PRE" == true ]]; then
+  echo "=== Checkpoints already found in ${OUT_DIR}; skipping training ==="
+else
+  echo "=== Starting training to ${OUT_DIR} (max_iters=${MAX_ITERS}) ==="
+  set -x
+  "${PYTHON_BIN}" -u "${TRAIN_PY}" "${GPT2_CFG}" \
+    --wandb_log="${WANDB_LOG_TRAIN}" --wandb_project="${WANDB_PROJECT_TRAIN}" --wandb_run_name="${WANDB_RUN_NAME_TRAIN}" \
+    --max_iters="${MAX_ITERS}" --lr_decay_iters="${LR_DECAY_ITERS}" \
+    --eval_interval="${EVAL_INTERVAL}" --eval_iters="${EVAL_ITERS}" --log_interval="${LOG_INTERVAL}" \
+    --use_baseline_model=False \
+    --loop_sampling_strategy="${LOOP_SAMPLING_STRATEGY}" \
+    --loop_sampling_rbar="${LOOP_SAMPLING_RBAR}"
+  set +x
+  DID_TRAIN=1
+fi
+
+if [[ "$DID_TRAIN" -eq 1 ]]; then
+  echo "=== Training finished; proceeding with analysis ==="
+else
+  echo "=== Proceeding directly to analysis ==="
+fi
 
 # ---------- Collect checkpoints ----------
 # Prefer periodic checkpoints; include last ckpt.pt as fallback
