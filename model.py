@@ -413,15 +413,12 @@ class GPT(nn.Module):
                     # Adapt dimensionality if concatenation is on
                     needs_adapter = False
                     if self.concatenate_initial_representation:
-                        # Case 1: Single effective pass (num_loops_for_this_group == 1). No noise applied above.
-                        # We duplicate input to match adapter's 2*n_embd expectation.
-                        if num_loops_for_this_group == 1:
-                             x_pass_input = torch.cat([x_pass_input, x_pass_input], dim=-1)
-                             needs_adapter = True
-                        # Case 2: Multi-loop (num_loops_for_this_group > 1)
-                        elif num_loops_for_this_group > 1:
-                            # The logic to prepare x_pass_input is now handled above.
-                            # For multi-loop with concatenation, adapter is always needed.
+                        # For a single effective pass (num_loops_for_this_group == 1), do NOT
+                        # alter the input dimensionality or use the adapter. This preserves
+                        # baseline behavior of a standard forward without loops.
+                        # For multi-loop (num_loops_for_this_group > 1), the input has been
+                        # prepared above (concatenation/noise), so the adapter is required.
+                        if num_loops_for_this_group > 1:
                             needs_adapter = True
                     
                     # Determine whether this iteration should contribute gradients.

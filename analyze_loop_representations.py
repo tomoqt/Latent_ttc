@@ -26,75 +26,88 @@ from model import GPTConfig, GPT
 
 def box_counting_dimension(points):
     """
-    Estimates the box-counting (Minkowski-Bouligand) dimension.
-    This is often used as an estimate for the Hausdorff dimension.
+    Estimate the box-counting (Minkowski-Bouligand) dimension without PCA.
+    Uses averaged counts over random grid shifts and fits only over a
+    non-plateau scaling window.
 
     Args:
-        points (np.ndarray): An array of shape (n_points, n_dims).
-        
+        points (np.ndarray): shape (n_points, n_dims)
+
     Returns:
-        float: The estimated box-counting dimension.
+        float: estimated dimension, or np.nan if no valid scaling window.
     """
     points = np.asarray(points)
     if points.ndim != 2 or points.shape[0] < 2:
         return 0.0
 
-    # Calculate the bounding box of the point cloud
-    # This gives us the minimum and maximum coordinates in each dimension
     min_coords = points.min(axis=0)
     max_coords = points.max(axis=0)
-    
-    # Edge case: if all points are identical (degenerate case), dimension is 0
-    # This happens when the trajectory doesn't actually move through space
     if np.all(min_coords == max_coords):
         return 0.0
 
-    # Normalize the point cloud to unit cube [0,1]^d
-    # This makes the analysis scale-invariant and easier to work with
     side_lengths = max_coords - min_coords
-    # Add small epsilon to avoid division by zero
-    points_normalized = (points - min_coords) / (side_lengths + 1e-9)
+    points_normalized = (points - min_coords) / (side_lengths + 1e-12)
 
-    # Create a range of scales (box sizes) to test
-    # We use logarithmic spacing from 0.001 to 1.0 to cover multiple orders of magnitude
-    # This range allows us to see how the point count changes across different resolutions
-    scales = np.logspace(np.log10(0.001), np.log10(1.0), num=20, endpoint=False)
-    
-    # For each scale, count how many boxes are needed to cover the point cloud
+    n_points, n_dims = points_normalized.shape
+
+    num_scales = 90
+    scales = np.logspace(np.log10(1e-6), np.log10(1.0), num=num_scales, endpoint=False)
+    num_shifts = 8
+    rng = np.random.default_rng(0)
+
     counts = []
-    for scale in scales:
-        # Skip invalid scales
-        if scale <= 0: continue
-        
-        # Discretize the normalized points by dividing by scale and taking floor
-        # This effectively creates a grid of boxes of size 'scale'
-        discretized = np.floor(points_normalized / scale)
-        
-        # Count unique boxes (grid cells) that contain at least one point
-        # This gives us N(ε) in the box-counting formula
-        count = len(np.unique(discretized, axis=0))
-        counts.append(count)
-        
-    # Convert to numpy array for vectorized operations
+    for eps in scales:
+        if eps <= 0:
+            continue
+        shift_counts = []
+        for _ in range(num_shifts):
+            offset = rng.uniform(0.0, eps, size=n_dims)
+            bins = np.floor((points_normalized + offset) / eps)
+            shift_counts.append(len(np.unique(bins, axis=0)))
+        counts.append(float(np.mean(shift_counts)))
+
     counts = np.array(counts)
-    
-    # Filter out scales where we only have 1 box (degenerate case)
-    # We need at least 2 different box counts to fit a line
-    valid_indices = (counts > 1)
-    if np.sum(valid_indices) < 2:
-        return np.nan  # Not enough data to estimate dimension
-        
-    # Keep only the valid scales and counts for the linear fit
-    scales = scales[valid_indices]
-    counts = counts[valid_indices]
-    
-    # Fit a line to log(N(ε)) vs log(1/ε) using least squares
-    # The slope of this line is the box-counting dimension
-    # Formula: log(N(ε)) = D * log(1/ε) + c, where D is the dimension
-    coeffs = np.polyfit(np.log(1/scales), np.log(counts), 1)
-    
-    # Return the slope (first coefficient), which is our dimension estimate
-    return coeffs[0]
+
+    # Keep scales away from both plateaus
+    alpha = 0.9
+    valid_mask = (counts > 1.0) & (counts < alpha * n_points)
+    if np.count_nonzero(valid_mask) < 2:
+        return np.nan
+
+    valid_indices = np.where(valid_mask)[0]
+    runs = []
+    start = None
+    prev = None
+    for idx in valid_indices:
+        if start is None:
+            start = idx
+            prev = idx
+        elif idx == prev + 1:
+            prev = idx
+        else:
+            runs.append((start, prev))
+            start = idx
+            prev = idx
+    if start is not None:
+        runs.append((start, prev))
+
+    if not runs:
+        return np.nan
+
+    run_lengths = [end - start + 1 for start, end in runs]
+    best_run = runs[int(np.argmax(run_lengths))]
+    start_i, end_i = best_run
+
+    # Require a minimum number of scales for stability; otherwise fall back to all valid
+    if (end_i - start_i + 1) < 4:
+        start_i, end_i = valid_indices[0], valid_indices[-1]
+        if (end_i - start_i + 1) < 2:
+            return np.nan
+
+    x = np.log(1.0 / scales[start_i:end_i + 1])
+    y = np.log(counts[start_i:end_i + 1])
+    coeffs = np.polyfit(x, y, 1)
+    return float(coeffs[0])
 
 def sanitize_filename_part(name_part):
     """Sanitizes a string to be used as part of a filename."""
@@ -971,6 +984,31 @@ def plot_comparison_singular_values(all_models_results, output_dir):
     plt.close()
     print(f"Max singular value comparison plot saved to {plot_filepath}")
     return plot_filepath
+def plot_hausdorff_dimensions_bar(hausdorff_means, hausdorff_stds, output_dir, model_name):
+    """
+    Create a bar plot of Hausdorff (box-count) dimension means with std error bars per token position.
+    """
+    if not hausdorff_means:
+        return None
+
+    os.makedirs(output_dir, exist_ok=True)
+    positions = sorted(hausdorff_means.keys(), key=lambda x: int(x.split('_')[1]))
+    means = [hausdorff_means[p] for p in positions]
+    stds = [hausdorff_stds.get(p, 0.0) for p in positions] if hausdorff_stds else [0.0 for _ in positions]
+
+    plt.figure(figsize=(max(12, len(positions) * 0.6), 6))
+    x = np.arange(len(positions))
+    plt.bar(x, means, yerr=stds, capsize=3)
+    plt.xticks(x, [f"Pos {p.split('_')[1]}" for p in positions], rotation=45, ha='right')
+    plt.ylabel('Estimated Hausdorff Dimension')
+    plt.title(f'Hausdorff Dimensions per Token Position - {model_name}')
+    plt.grid(axis='y', linestyle='--', alpha=0.6)
+    plt.tight_layout()
+    path = os.path.join(output_dir, 'hausdorff_dimensions.png')
+    plt.savefig(path, dpi=300)
+    plt.close()
+    return path
+
 
 def plot_comparison_convergence_diagnostics(all_models_results, output_dir):
     """
@@ -1272,10 +1310,36 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
 
         # --- Aggregate data for this prompt ---
         if args.calculate_hausdorff_dimension and len(loop_reps) > 1:
+            use_pca_for_hd = bool(getattr(args, 'hausdorff_after_pca', False))
+            transformed_reps_list_for_hd = None
+            if use_pca_for_hd:
+                # Ensure at least 2 components when using PCA for Hausdorff
+                n_comp_hd = max(2, int(getattr(args, 'n_pca_components', 2)))
+                try:
+                    _, transformed_reps_list_for_hd = compute_pca_and_transform(loop_reps, n_components=n_comp_hd)
+                except Exception as e:
+                    print(f"Warning: PCA for Hausdorff failed ({e}). Falling back to original space.")
+                    use_pca_for_hd = False
+
             for token_idx in range(prompt_seq_len):
-                trajectory_points = torch.stack([loop_reps[i][token_idx] for i in range(len(loop_reps))]).numpy()
-                dim = box_counting_dimension(trajectory_points)
+                if use_pca_for_hd and transformed_reps_list_for_hd is not None:
+                    # Build trajectory in PCA space (use all available components from the transform)
+                    num_comp_avail = transformed_reps_list_for_hd[0].shape[1]
+                    traj_points = np.stack([
+                        transformed_reps_list_for_hd[i][token_idx, :num_comp_avail]
+                        for i in range(len(transformed_reps_list_for_hd))
+                    ], axis=0)
+                else:
+                    traj_points = torch.stack([loop_reps[i][token_idx] for i in range(len(loop_reps))]).numpy()
+
+                dim = box_counting_dimension(traj_points)
                 all_hausdorff_dims[f"pos_{token_idx}"].append(dim)
+                try:
+                    token_label = prompt_tokens_str[token_idx]
+                except Exception:
+                    token_label = f"pos_{token_idx}"
+                suffix = " (PCA space)" if use_pca_for_hd and transformed_reps_list_for_hd is not None else ""
+                print(f"Hausdorff (box-count) dim for token {token_idx} '{token_label}': {dim}{suffix}")
 
         if convergence_diagnostics:
             for group_key, metrics in convergence_diagnostics.items():
@@ -1295,8 +1359,8 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                 all_global_diags[metric_key].append(values)
 
 
-        # --- Generate detailed plots only for the first prompt ---
-        if i == 0:
+        # --- Generate detailed plots only for the first prompt (skip when only Hausdorff is requested) ---
+        if i == 0 and not getattr(args, 'only_hausdorff', False):
             print("  (Generating detailed plots for the first prompt only)")
             if loop_reps:
                 try:
@@ -1328,10 +1392,25 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
     # --- Aggregate results across all prompts ---
     print("\nAggregating results across all prompts...")
     if args.calculate_hausdorff_dimension and all_hausdorff_dims:
+        hd_means = {pos: np.mean(dims) for pos, dims in all_hausdorff_dims.items()}
+        hd_stds = {pos: np.std(dims) for pos, dims in all_hausdorff_dims.items()}
         results_for_comparison['hausdorff_dimensions'] = {
-            'mean': {pos: np.mean(dims) for pos, dims in all_hausdorff_dims.items()},
-            'std': {pos: np.std(dims) for pos, dims in all_hausdorff_dims.items()}
+            'mean': hd_means,
+            'std': hd_stds
         }
+        # Per-checkpoint WandB logging (numerical and plot)
+        plot_path = plot_hausdorff_dimensions_bar(hd_means, hd_stds, output_dir, model_name)
+        if wandb_logging_enabled:
+            log_dict = {}
+            if plot_path and os.path.exists(plot_path):
+                log_dict[f"{model_name}/hausdorff_dimensions_plot"] = wandb.Image(plot_path)
+            # Log scalar metrics per token position
+            for pos_key, mean_val in hd_means.items():
+                log_dict[f"{model_name}/hausdorff/{pos_key}_mean"] = float(mean_val)
+            for pos_key, std_val in hd_stds.items():
+                log_dict[f"{model_name}/hausdorff/{pos_key}_std"] = float(std_val)
+            if log_dict:
+                wandb.log(log_dict)
     
     def aggregate_diagnostic_data(all_data_by_key):
         agg_results = {}
@@ -1449,6 +1528,7 @@ def main():
     parser.add_argument('--max_new_tokens_for_analysis', type=int, default=1, help='Number of new tokens for representation collection trigger')
     parser.add_argument('--num_last_steps_for_zoom', type=int, default=15, help='Number of last loops for zoomed plots')
     parser.add_argument('--calculate_hausdorff_dimension', action='store_true', help='If set, calculate the Hausdorff dimension of trajectories.')
+    parser.add_argument('--hausdorff_after_pca', action='store_true', help='If set, compute Hausdorff (box-count) on PCA-transformed trajectories.')
     parser.add_argument('--track_convergence_diagnostics', action='store_true', help='If set, track and plot convergence diagnostics.')
     parser.add_argument('--calculate_jacobian', action='store_true', help='If set, calculate and plot Jacobian eigenvalues.')
     parser.add_argument('--calculate_jacobian_trajectory', action='store_true', help='If set, plot the trajectory of the max Jacobian eigenvalue.')
@@ -1456,6 +1536,7 @@ def main():
     parser.add_argument('--plot_singular_values', action='store_true', help='If set, plot the max singular values of the model\'s weight matrices.')
     parser.add_argument('--wandb_project', type=str, default=None, help='Wandb project name for logging analysis.')
     parser.add_argument('--wandb_run_name', type=str, default=None, help='Wandb run name for logging analysis. If not provided, a new one will be generated.')
+    parser.add_argument('--only_hausdorff', action='store_true', help='If set, skip all computations/plots except Hausdorff dimension.')
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
