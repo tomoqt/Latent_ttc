@@ -28,7 +28,7 @@ from model import GPTConfig, GPT
 # Global plotting style
 try:
     plt.rcParams.update({
-        "text.usetex": True,
+        "text.usetex": False,
         "font.family": "serif",
         "axes.titlesize": 24,
         "axes.labelsize": 24,

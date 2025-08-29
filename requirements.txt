@@ -7,3 +7,4 @@ wandb
 tqdm
 scikit-learn
 matplotlib
+seaborn
