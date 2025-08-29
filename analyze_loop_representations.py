@@ -1177,25 +1177,23 @@ def plot_loop30_vs_checkpoint(all_models_results, output_dir, include_convergenc
     os.makedirs(output_dir, exist_ok=True)
     plots = {}
 
-    # Helper: natural sort by numeric suffix in checkpoint name; returns indices
-    def _ckpt_sort_key(name):
+    # Helpers to extract checkpoint index (k) where ckpt_k ⇒ iterations = k (in thousands)
+    def _extract_ckpt_k(name):
         import re
-        # skip plain 'ckpt' (final checkpoint)
-        if name == 'ckpt':
-            return float('inf')
         m = re.search(r'(\d+)(?!.*\d)', name)
-        return int(m.group(1)) if m else float('inf')
+        return int(m.group(1)) if m else None
 
-    # Helper to create a line plot
-    def _line_plot(x_labels, y_values, title, ylabel, filename):
-        # sort by checkpoint index for coherent x axis
-        order = sorted(range(len(x_labels)), key=lambda i: _ckpt_sort_key(x_labels[i]))
-        x_labels_sorted = [x_labels[i] for i in order if x_labels[i] != 'ckpt']
-        y_sorted = [y_values[i] for i in order if x_labels[i] != 'ckpt']
-        plt.figure(figsize=(max(10, len(x_labels_sorted) * 0.9), 6))
-        x = np.arange(len(x_labels_sorted))
-        plt.plot(x, y_sorted, marker='o', linestyle='-')
-        plt.xticks(x, x_labels_sorted, rotation=45, ha='right')
+    # Helper to create a line plot with x = checkpoint k (thousands)
+    def _line_plot_from_k(x_ks, y_values, title, ylabel, filename):
+        # Sort by k
+        pairs = sorted(zip(x_ks, y_values), key=lambda p: p[0])
+        if not pairs:
+            return None
+        x_sorted = [p[0] for p in pairs]
+        y_sorted = [p[1] for p in pairs]
+        plt.figure(figsize=(max(10, len(x_sorted) * 0.9), 6))
+        plt.plot(x_sorted, y_sorted, marker='o', linestyle='-')
+        plt.xlabel('Iterations (k)')
         plt.ylabel(ylabel)
         plt.title(title)
         plt.grid(True, linestyle='--', alpha=0.6)
@@ -1216,7 +1214,7 @@ def plot_loop30_vs_checkpoint(all_models_results, output_dir, include_convergenc
 
         for group_key in sorted(all_groups):
             for metric in metric_keys:
-                x_labels, y_vals = [], []
+                x_ks, y_vals = [], []
                 for model_name, res in all_models_results.items():
                     if 'convergence_diagnostics' not in res: continue
                     gdata = res['convergence_diagnostics'].get(group_key)
@@ -1226,20 +1224,22 @@ def plot_loop30_vs_checkpoint(all_models_results, output_dir, include_convergenc
                     idx = min(30, len(mean_series) - 1)
                     val = mean_series[idx]
                     if val is None or (isinstance(val, float) and np.isnan(val)): continue
-                    x_labels.append(model_name)
+                    k = _extract_ckpt_k(model_name)
+                    if k is None: continue
+                    x_ks.append(k)
                     y_vals.append(float(val))
-                if x_labels and y_vals:
+                if x_ks and y_vals:
                     fname = f"loop30_vs_ckpt_{group_key}_{metric}.png"
                     title = f"Loop-30 {metric} vs Checkpoint ({group_key})"
                     ylabel = metric.replace('_', ' ').title()
-                    path = _line_plot(x_labels, y_vals, title, ylabel, fname)
+                    path = _line_plot_from_k(x_ks, y_vals, title, ylabel, fname)
                     plots[f"loop30_convergence_{group_key}_{metric}"] = path
 
     # Global diagnostics (single series)
     if include_global and any('global_diagnostics' in res for res in all_models_results.values()):
         metric_keys = ['delta_norm', 'delta_angle', 'hidden_norm', 'logit_drift']
         for metric in metric_keys:
-            x_labels, y_vals = [], []
+            x_ks, y_vals = [], []
             for model_name, res in all_models_results.items():
                 g = res.get('global_diagnostics')
                 if not g or metric not in g: continue
@@ -1248,16 +1248,108 @@ def plot_loop30_vs_checkpoint(all_models_results, output_dir, include_convergenc
                 idx = min(30, len(mean_series) - 1)
                 val = mean_series[idx]
                 if val is None or (isinstance(val, float) and np.isnan(val)): continue
-                x_labels.append(model_name)
+                k = _extract_ckpt_k(model_name)
+                if k is None: continue
+                x_ks.append(k)
                 y_vals.append(float(val))
-            if x_labels and y_vals:
+            if x_ks and y_vals:
                 fname = f"loop30_vs_ckpt_global_{metric}.png"
                 title = f"Loop-30 {metric} vs Checkpoint (Global)"
                 ylabel = metric.replace('_', ' ').title()
-                path = _line_plot(x_labels, y_vals, title, ylabel, fname)
+                path = _line_plot_from_k(x_ks, y_vals, title, ylabel, fname)
                 plots[f"loop30_global_{metric}"] = path
 
     return plots
+
+def _load_tables_from_dir(tables_dir):
+    """
+    Load metrics tables from a directory previously produced by this script.
+    Expected files:
+      - convergence_{group_key}.csv   (columns: loop_iter, <metrics...>)
+      - global_diagnostics.csv        (columns: loop_iter, <metrics...>)
+      - optionally: hausdorff_dimensions.csv (columns: pos, mean, std)
+    Returns a results dict in the same schema used by analyze_single_model.
+    """
+    results = {}
+    if not os.path.isdir(tables_dir):
+        return results
+
+    # Convergence diagnostics (per group)
+    conv = {}
+    try:
+        for fname in os.listdir(tables_dir):
+            if fname.startswith('convergence_') and fname.endswith('.csv'):
+                group_key = fname[len('convergence_'):-len('.csv')]
+                path = os.path.join(tables_dir, fname)
+                with open(path, 'r') as f:
+                    header = f.readline().strip().split(',')
+                    rows = f.read().strip().splitlines()
+                # header[0] is loop_iter; others are metric keys
+                metric_keys = header[1:]
+                series = {k: [] for k in metric_keys}
+                for line in rows:
+                    parts = line.split(',')
+                    for i, k in enumerate(metric_keys, start=1):
+                        val = parts[i].strip()
+                        if val == '':
+                            series[k].append(None)
+                        else:
+                            try:
+                                series[k].append(float(val))
+                            except ValueError:
+                                series[k].append(None)
+                conv[group_key] = {mk: {'mean': series[mk]} for mk in metric_keys}
+    except Exception as e:
+        print(f"Warning: failed loading convergence tables from {tables_dir}: {e}")
+
+    if conv:
+        results['convergence_diagnostics'] = conv
+
+    # Global diagnostics
+    try:
+        gpath = os.path.join(tables_dir, 'global_diagnostics.csv')
+        if os.path.isfile(gpath):
+            with open(gpath, 'r') as f:
+                header = f.readline().strip().split(',')
+                rows = f.read().strip().splitlines()
+            metric_keys = header[1:]
+            series = {k: [] for k in metric_keys}
+            for line in rows:
+                parts = line.split(',')
+                for i, k in enumerate(metric_keys, start=1):
+                    val = parts[i].strip()
+                    if val == '':
+                        series[k].append(None)
+                    else:
+                        try:
+                            series[k].append(float(val))
+                        except ValueError:
+                            series[k].append(None)
+            results['global_diagnostics'] = {mk: {'mean': series[mk]} for mk in metric_keys}
+    except Exception as e:
+        print(f"Warning: failed loading global diagnostics from {tables_dir}: {e}")
+
+    # Optional Hausdorff (if present)
+    try:
+        hpath = os.path.join(tables_dir, 'hausdorff_dimensions.csv')
+        if os.path.isfile(hpath):
+            import csv
+            means, stds = {}, {}
+            with open(hpath, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    pos = row.get('pos') or row.get('position') or row.get('token')
+                    mean_s = row.get('mean')
+                    std_s = row.get('std')
+                    if pos and mean_s:
+                        means[pos] = float(mean_s)
+                        stds[pos] = float(std_s) if std_s else 0.0
+            if means:
+                results['hausdorff_dimensions'] = {'mean': means, 'std': stds}
+    except Exception as e:
+        print(f"Warning: failed loading Hausdorff dimensions from {tables_dir}: {e}")
+
+    return results
 
 def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_overrides, prompts, tokenizer_encode_fn, tokenizer_decode_fn_for_single_id_to_str, wandb_logging_enabled):
     """
@@ -1647,13 +1739,19 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                     for k in keys:
                         s = metrics[k].get('mean', [])
                         max_len = max(max_len, len(s) if s is not None else 0)
+                    rows_for_table = []
                     with open(csv_path, 'w', newline='') as f:
                         writer = csv.writer(f)
-                        writer.writerow(['loop_iter'] + keys)
+                        header = ['loop_iter'] + keys
+                        writer.writerow(header)
                         for i in range(max_len):
                             row = [i] + [metrics[k]['mean'][i] if ('mean' in metrics[k] and i < len(metrics[k]['mean'])) else '' for k in keys]
                             writer.writerow(row)
-                    log_dict[f"{model_name}/tables/convergence_{group_key}"] = wandb.Table(dataframe=None, headers=None, path=csv_path)
+                            rows_for_table.append(row)
+                    try:
+                        log_dict[f"{model_name}/tables/convergence_{group_key}"] = wandb.Table(data=rows_for_table, columns=header)
+                    except Exception as te:
+                        print(f"Warning: failed creating WandB Table for convergence {group_key}: {te}")
 
             # Global diagnostics
             if args.track_global_diagnostics and 'global_diagnostics' in results_for_comparison:
@@ -1665,13 +1763,19 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                 for k in keys:
                     s = g[k].get('mean', [])
                     max_len = max(max_len, len(s) if s is not None else 0)
+                rows_for_table = []
                 with open(csv_path, 'w', newline='') as f:
                     writer = csv.writer(f)
-                    writer.writerow(['loop_iter'] + keys)
+                    header = ['loop_iter'] + keys
+                    writer.writerow(header)
                     for i in range(max_len):
                         row = [i] + [g[k]['mean'][i] if ('mean' in g[k] and i < len(g[k]['mean'])) else '' for k in keys]
                         writer.writerow(row)
-                log_dict[f"{model_name}/tables/global_diagnostics"] = wandb.Table(dataframe=None, headers=None, path=csv_path)
+                        rows_for_table.append(row)
+                try:
+                    log_dict[f"{model_name}/tables/global_diagnostics"] = wandb.Table(data=rows_for_table, columns=header)
+                except Exception as te:
+                    print(f"Warning: failed creating WandB Table for global diagnostics: {te}")
 
             if log_dict:
                 wandb.log(log_dict)
@@ -1683,7 +1787,8 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze and visualize loop representations from a GPT model using PCA.")
-    parser.add_argument('--checkpoint_paths', type=str, nargs='+', required=True, help='One or more full paths to model checkpoint (.pt files)')
+    parser.add_argument('--checkpoint_paths', type=str, nargs='+', required=False, help='One or more full paths to model checkpoint (.pt files)')
+    parser.add_argument('--tables_dirs', type=str, nargs='+', default=None, help='One or more directories with precomputed tables (CSV) to plot from, bypassing inference.')
     parser.add_argument('--model_configs', type=str, nargs='+', default=None, help='A list of JSON strings or file paths to Python config files, one for each checkpoint.')
     parser.add_argument('--prompts_file', type=str, default=None, help='Path to a text file containing prompts, one per line. If not provided, a default prompt is used.')
     parser.add_argument('--prompt', type=str, default="Hello world, this is a test.", help='Input prompt string (used if prompts_file is not provided)')
@@ -1783,7 +1888,24 @@ def main():
 
     # --- Model Analysis Loop ---
     all_models_results = {}
-    for i, checkpoint_path in enumerate(args.checkpoint_paths):
+
+    # Case 1: Load from tables, bypassing inference
+    if args.tables_dirs:
+        for tdir in args.tables_dirs:
+            model_name = sanitize_filename_part(os.path.basename(os.path.normpath(tdir)))
+            print(f"\n{'='*80}")
+            print(f"Loading results from tables: {model_name} at {tdir}")
+            print(f"{'='*80}")
+            out_dir = os.path.join(args.output_dir, model_name)
+            os.makedirs(out_dir, exist_ok=True)
+            res = _load_tables_from_dir(tdir)
+            if res:
+                all_models_results[model_name] = res
+        # If only using tables, skip the rest and go to comparison/plotting
+    
+    # Case 2: Run inference if checkpoints provided
+    if args.checkpoint_paths:
+        for i, checkpoint_path in enumerate(args.checkpoint_paths):
         # Sanitize model name and handle "swapped" case
         base_name = os.path.basename(checkpoint_path).replace('.pt', '')
         if 'swapped' in base_name:

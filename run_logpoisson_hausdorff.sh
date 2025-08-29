@@ -127,7 +127,7 @@ WANDB_RUN_NAME_ANALYSIS="${WANDB_RUN_NAME_ANALYSIS:-${EXP_NAME}-analysis}"
 echo "=== Running analysis to ${ANALYSIS_DIR} ==="
 set -x
 "${PYTHON_BIN}" -u "${ANALYZE_PY}" \
-  --checkpoint_paths "${CHECKPOINTS[@]}" \
+  $( [[ -n "${TABLES_DIRS:-}" ]] && echo --tables_dirs ${TABLES_DIRS} || echo --checkpoint_paths "${CHECKPOINTS[@]}" ) \
   --output_dir "${ANALYSIS_DIR}" \
   --prompts_file "${PROMPTS_FILE}" \
   --meta_path "${META_PATH}" \
