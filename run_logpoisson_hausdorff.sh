@@ -118,6 +118,7 @@ CALC_JACOBIAN="${CALC_JACOBIAN:-False}"
 CALC_JACOBIAN_TRAJ="${CALC_JACOBIAN_TRAJ:-False}"
 TRACK_GLOBAL_DX="${TRACK_GLOBAL_DX:-True}"
 PLOT_SINGULAR_VALUES="${PLOT_SINGULAR_VALUES:-True}"
+ONLY_LOOP30_METRICS="${ONLY_LOOP30_METRICS:-True}"
 
 # WandB logging for analysis (enabled by default to track plots across checkpoints)
 WANDB_PROJECT_ANALYSIS="${WANDB_PROJECT_ANALYSIS:-gpt2-looped-analysis}"
@@ -139,6 +140,7 @@ set -x
   $( [[ "$CALC_JACOBIAN" == "True" ]] && echo --calculate_jacobian || true ) \
   $( [[ "$CALC_JACOBIAN_TRAJ" == "True" ]] && echo --calculate_jacobian_trajectory || true ) \
   $( [[ "$TRACK_GLOBAL_DX" == "True" ]] && echo --track_global_diagnostics || true ) \
+  $( [[ "$ONLY_LOOP30_METRICS" == "True" ]] && echo --only_loop30_metrics || true ) \
   $( [[ -n "$WANDB_PROJECT_ANALYSIS" && -n "$WANDB_RUN_NAME_ANALYSIS" ]] && echo --wandb_project "$WANDB_PROJECT_ANALYSIS" --wandb_run_name "$WANDB_RUN_NAME_ANALYSIS" || true )
 set +x
 

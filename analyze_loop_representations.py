@@ -1151,15 +1151,28 @@ def plot_loop30_vs_checkpoint(all_models_results, output_dir, include_convergenc
     os.makedirs(output_dir, exist_ok=True)
     plots = {}
 
-    # Helper to create a bar plot
-    def _bar_plot(x_labels, y_values, title, ylabel, filename):
-        plt.figure(figsize=(max(10, len(x_labels) * 0.8), 6))
-        x = np.arange(len(x_labels))
-        plt.bar(x, y_values)
-        plt.xticks(x, x_labels, rotation=45, ha='right')
+    # Helper: natural sort by numeric suffix in checkpoint name; returns indices
+    def _ckpt_sort_key(name):
+        import re
+        # skip plain 'ckpt' (final checkpoint)
+        if name == 'ckpt':
+            return float('inf')
+        m = re.search(r'(\d+)(?!.*\d)', name)
+        return int(m.group(1)) if m else float('inf')
+
+    # Helper to create a line plot
+    def _line_plot(x_labels, y_values, title, ylabel, filename):
+        # sort by checkpoint index for coherent x axis
+        order = sorted(range(len(x_labels)), key=lambda i: _ckpt_sort_key(x_labels[i]))
+        x_labels_sorted = [x_labels[i] for i in order if x_labels[i] != 'ckpt']
+        y_sorted = [y_values[i] for i in order if x_labels[i] != 'ckpt']
+        plt.figure(figsize=(max(10, len(x_labels_sorted) * 0.9), 6))
+        x = np.arange(len(x_labels_sorted))
+        plt.plot(x, y_sorted, marker='o', linestyle='-')
+        plt.xticks(x, x_labels_sorted, rotation=45, ha='right')
         plt.ylabel(ylabel)
         plt.title(title)
-        plt.grid(axis='y', linestyle='--', alpha=0.6)
+        plt.grid(True, linestyle='--', alpha=0.6)
         plt.tight_layout()
         path = os.path.join(output_dir, filename)
         plt.savefig(path, dpi=300)
@@ -1193,7 +1206,7 @@ def plot_loop30_vs_checkpoint(all_models_results, output_dir, include_convergenc
                     fname = f"loop30_vs_ckpt_{group_key}_{metric}.png"
                     title = f"Loop-30 {metric} vs Checkpoint ({group_key})"
                     ylabel = metric.replace('_', ' ').title()
-                    path = _bar_plot(x_labels, y_vals, title, ylabel, fname)
+                    path = _line_plot(x_labels, y_vals, title, ylabel, fname)
                     plots[f"loop30_convergence_{group_key}_{metric}"] = path
 
     # Global diagnostics (single series)
@@ -1215,7 +1228,7 @@ def plot_loop30_vs_checkpoint(all_models_results, output_dir, include_convergenc
                 fname = f"loop30_vs_ckpt_global_{metric}.png"
                 title = f"Loop-30 {metric} vs Checkpoint (Global)"
                 ylabel = metric.replace('_', ' ').title()
-                path = _bar_plot(x_labels, y_vals, title, ylabel, fname)
+                path = _line_plot(x_labels, y_vals, title, ylabel, fname)
                 plots[f"loop30_global_{metric}"] = path
 
     return plots
@@ -1373,7 +1386,7 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
 
 
         # --- Generate detailed plots only for the first prompt (skip when only Hausdorff is requested) ---
-        if i == 0 and not getattr(args, 'only_hausdorff', False):
+        if i == 0 and not getattr(args, 'only_hausdorff', False) and not getattr(args, 'only_loop30_metrics', False):
             print("  (Generating detailed plots for the first prompt only)")
             if loop_reps:
                 try:
@@ -1585,18 +1598,59 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
 
     # Log a per-checkpoint summary metric table for loop-30 values across metrics
     try:
-        if wandb_logging_enabled and args.track_convergence_diagnostics and 'convergence_diagnostics' in results_for_comparison:
-            # Build a summary dict for last iteration (assumed loop index 30 or last available)
-            summary = {}
-            for group_key, metrics in results_for_comparison['convergence_diagnostics'].items():
-                for metric_key, series in metrics.items():
-                    if 'mean' in series and isinstance(series['mean'], (list, np.ndarray)) and len(series['mean']) > 0:
-                        idx = min(30, len(series['mean']) - 1)
-                        summary[f"{model_name}/loop30/{group_key}/{metric_key}"] = float(series['mean'][idx])
-            if summary:
-                wandb.log(summary)
+        if wandb_logging_enabled:
+            # CSV/Tables for metrics (loop series and loop-30 summary)
+            csv_output_dir = os.path.join(output_dir, "tables")
+            os.makedirs(csv_output_dir, exist_ok=True)
+            log_dict = {}
+
+            # Convergence diagnostics (per group)
+            if args.track_convergence_diagnostics and 'convergence_diagnostics' in results_for_comparison:
+                for group_key, metrics in results_for_comparison['convergence_diagnostics'].items():
+                    # loop-30 summary
+                    for metric_key, series in metrics.items():
+                        if 'mean' in series and isinstance(series['mean'], (list, np.ndarray)) and len(series['mean']) > 0:
+                            idx = min(30, len(series['mean']) - 1)
+                            log_dict[f"{model_name}/loop30/{group_key}/{metric_key}"] = float(series['mean'][idx])
+                    # save full series as CSV
+                    import csv
+                    csv_path = os.path.join(csv_output_dir, f"convergence_{group_key}.csv")
+                    keys = sorted(metrics.keys())
+                    # compute max length across metrics
+                    max_len = 0
+                    for k in keys:
+                        s = metrics[k].get('mean', [])
+                        max_len = max(max_len, len(s) if s is not None else 0)
+                    with open(csv_path, 'w', newline='') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(['loop_iter'] + keys)
+                        for i in range(max_len):
+                            row = [i] + [metrics[k]['mean'][i] if ('mean' in metrics[k] and i < len(metrics[k]['mean'])) else '' for k in keys]
+                            writer.writerow(row)
+                    log_dict[f"{model_name}/tables/convergence_{group_key}"] = wandb.Table(dataframe=None, headers=None, path=csv_path)
+
+            # Global diagnostics
+            if args.track_global_diagnostics and 'global_diagnostics' in results_for_comparison:
+                import csv
+                g = results_for_comparison['global_diagnostics']
+                csv_path = os.path.join(csv_output_dir, f"global_diagnostics.csv")
+                keys = sorted(g.keys())
+                max_len = 0
+                for k in keys:
+                    s = g[k].get('mean', [])
+                    max_len = max(max_len, len(s) if s is not None else 0)
+                with open(csv_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['loop_iter'] + keys)
+                    for i in range(max_len):
+                        row = [i] + [g[k]['mean'][i] if ('mean' in g[k] and i < len(g[k]['mean'])) else '' for k in keys]
+                        writer.writerow(row)
+                log_dict[f"{model_name}/tables/global_diagnostics"] = wandb.Table(dataframe=None, headers=None, path=csv_path)
+
+            if log_dict:
+                wandb.log(log_dict)
     except Exception as e:
-        print(f"Warning: failed to log loop-30 summary metrics: {e}")
+        print(f"Warning: failed to log loop-30 metrics/tables: {e}")
 
     return results_for_comparison
 
@@ -1624,6 +1678,7 @@ def main():
     parser.add_argument('--wandb_project', type=str, default=None, help='Wandb project name for logging analysis.')
     parser.add_argument('--wandb_run_name', type=str, default=None, help='Wandb run name for logging analysis. If not provided, a new one will be generated.')
     parser.add_argument('--only_hausdorff', action='store_true', help='If set, skip all computations/plots except Hausdorff dimension.')
+    parser.add_argument('--only_loop30_metrics', action='store_true', help='If set, skip heavy plots and compute/log only loop-30 metrics and comparisons.')
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -1744,22 +1799,22 @@ def main():
         
         comparison_plots_paths = {}
 
-        if args.calculate_hausdorff_dimension:
+        if args.calculate_hausdorff_dimension and not args.only_loop30_metrics:
             fp = plot_comparison_hausdorff(all_models_results, comparison_output_dir)
             if fp: comparison_plots_paths['comparison_hausdorff'] = fp
-        if args.plot_singular_values:
+        if args.plot_singular_values and not args.only_loop30_metrics:
             fp = plot_comparison_singular_values(all_models_results, comparison_output_dir)
             if fp: comparison_plots_paths['comparison_singular_values'] = fp
-        if args.track_convergence_diagnostics:
+        if args.track_convergence_diagnostics and not args.only_loop30_metrics:
             paths = plot_comparison_convergence_diagnostics(all_models_results, comparison_output_dir)
             comparison_plots_paths.update(paths)
-        if args.calculate_jacobian:
+        if args.calculate_jacobian and not args.only_loop30_metrics:
             paths = plot_comparison_jacobian_eigenvalues(all_models_results, comparison_output_dir)
             comparison_plots_paths.update(paths)
-        if args.calculate_jacobian_trajectory:
+        if args.calculate_jacobian_trajectory and not args.only_loop30_metrics:
             paths = plot_comparison_jacobian_eigenvalue_trajectory(all_models_results, comparison_output_dir)
             comparison_plots_paths.update(paths)
-        if args.track_global_diagnostics:
+        if args.track_global_diagnostics and not args.only_loop30_metrics:
             paths = plot_comparison_global_diagnostics(all_models_results, comparison_output_dir)
             comparison_plots_paths.update(paths)
 
