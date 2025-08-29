@@ -1906,36 +1906,36 @@ def main():
     # Case 2: Run inference if checkpoints provided
     if args.checkpoint_paths:
         for i, checkpoint_path in enumerate(args.checkpoint_paths):
-        # Sanitize model name and handle "swapped" case
-        base_name = os.path.basename(checkpoint_path).replace('.pt', '')
-        if 'swapped' in base_name:
-             model_name = sanitize_filename_part(base_name)
-        else:
-             model_name = sanitize_filename_part(base_name)
+            # Sanitize model name and handle "swapped" case
+            base_name = os.path.basename(checkpoint_path).replace('.pt', '')
+            if 'swapped' in base_name:
+                model_name = sanitize_filename_part(base_name)
+            else:
+                model_name = sanitize_filename_part(base_name)
 
-        print(f"\n{'='*80}")
-        print(f"Analyzing model: {model_name} from {checkpoint_path}")
-        print(f"{'='*80}")
+            print(f"\n{'='*80}")
+            print(f"Analyzing model: {model_name} from {checkpoint_path}")
+            print(f"{'='*80}")
 
-        model_output_dir = os.path.join(args.output_dir, model_name)
-        os.makedirs(model_output_dir, exist_ok=True)
+            model_output_dir = os.path.join(args.output_dir, model_name)
+            os.makedirs(model_output_dir, exist_ok=True)
 
-        # Get the specific config for this model
-        model_specific_config = all_config_overrides[i]
+            # Get the specific config for this model
+            model_specific_config = all_config_overrides[i]
 
-        results = analyze_single_model(
-            checkpoint_path=checkpoint_path,
-            output_dir=model_output_dir,
-            model_name=model_name,
-            args=args,
-            config_overrides=model_specific_config,
-            prompts=prompts,
-            tokenizer_encode_fn=tokenizer_encode_fn,
-            tokenizer_decode_fn_for_single_id_to_str=tokenizer_decode_fn_for_single_id_to_str,
-            wandb_logging_enabled=wandb_logging_enabled,
-        )
-        if results:
-            all_models_results[model_name] = results
+            results = analyze_single_model(
+                checkpoint_path=checkpoint_path,
+                output_dir=model_output_dir,
+                model_name=model_name,
+                args=args,
+                config_overrides=model_specific_config,
+                prompts=prompts,
+                tokenizer_encode_fn=tokenizer_encode_fn,
+                tokenizer_decode_fn_for_single_id_to_str=tokenizer_decode_fn_for_single_id_to_str,
+                wandb_logging_enabled=wandb_logging_enabled,
+            )
+            if results:
+                all_models_results[model_name] = results
 
     # --- Comparison Plotting ---
     if len(all_models_results) > 1:
