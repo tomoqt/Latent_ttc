@@ -9,6 +9,7 @@ import argparse
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 from mpl_toolkits.mplot3d import Axes3D # For 3D plotting
 from sklearn.decomposition import PCA
 import os
@@ -23,6 +24,31 @@ from collections import defaultdict
 import wandb
 # Assuming model.py is in the same directory or accessible in PYTHONPATH
 from model import GPTConfig, GPT
+
+# Global plotting style
+try:
+    plt.rcParams.update({
+        "text.usetex": True,
+        "font.family": "serif",
+        "axes.titlesize": 24,
+        "axes.labelsize": 24,
+        "xtick.labelsize": 24,
+        "ytick.labelsize": 20,
+        "legend.fontsize": 24,
+    })
+except Exception:
+    # Fallback if LaTeX is not available in the environment
+    plt.rcParams.update({
+        "text.usetex": False,
+        "font.family": "serif",
+        "axes.titlesize": 24,
+        "axes.labelsize": 24,
+        "xtick.labelsize": 24,
+        "ytick.labelsize": 20,
+        "legend.fontsize": 24,
+    })
+
+sns.set_context("talk")
 
 def box_counting_dimension(points):
     """
