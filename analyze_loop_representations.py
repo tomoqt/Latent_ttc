@@ -203,46 +203,27 @@ def plot_pca_trajectories_2d(pca_transformed_reps_list, prompt_tokens_str, outpu
     plt.figure(figsize=(14, 10))
     ax = plt.gca()
     
-    token_cmap = plt.cm.get_cmap('tab10', seq_len if seq_len <= 10 else 20)
-    
-    for token_idx in range(seq_len):
-        trajectory = np.array([pca_transformed_reps_list[loop_idx][token_idx, :2] for loop_idx in range(num_loops)])
-        token_label = prompt_tokens_str[token_idx] if token_idx < len(prompt_tokens_str) else f"Token {token_idx}"
-        
-        # Plot main trajectory line (colored by token)
-        ax.plot(trajectory[:, 0], trajectory[:, 1], linestyle='-', 
-                 color=token_cmap(token_idx % token_cmap.N), 
-                 label=f"'{token_label}' (pos {token_idx})" if num_loop_groups == 1 else None, # Avoid duplicate labels if markers are colored
-                 alpha=0.4, zorder=1)
+    # Simplified plotting: no per-token lines, color by loop depth, marker shape by group
+    depth_cmap = plt.cm.viridis
+    group_markers = ['o','s','^','D','P','X','v','<','>']
+    # Normalize loop index for color gradient
+    total_loops_for_norm = total_model_loops if total_model_loops and total_model_loops > 0 else num_loops
 
-        # Plot markers colored by loop group and progression
-        for loop_k in range(num_loops):
-            point_coords = trajectory[loop_k, :]
-            original_loop_idx = loop_k
+    for loop_k in range(num_loops):
+        group_idx = loop_k % num_loop_groups
+        marker = group_markers[group_idx % len(group_markers)]
+        depth_norm = (loop_k + 1) / max(1, total_loops_for_norm)
+        color = depth_cmap(depth_norm)
+        # scatter all tokens at this loop step
+        pts = np.array([pca_transformed_reps_list[loop_k][token_idx, :2] for token_idx in range(seq_len)])
+        ax.scatter(pts[:,0], pts[:,1], color=color, marker=marker, s=12, alpha=0.6, zorder=2 if loop_k>0 else 3,
+                   label=f"Group {group_idx}" if loop_k < num_loop_groups else None)
 
-            group_idx = original_loop_idx % num_loop_groups
-            cmap_for_point = PALETTES[group_idx % len(PALETTES)]
-            occurrence = original_loop_idx // num_loop_groups
-            # Max occurrence index for this group_idx
-            max_occ_idx = (total_model_loops - 1 - group_idx) // num_loop_groups
-            
-            norm_val = occurrence / max(1, max_occ_idx) if max_occ_idx >= 0 and max_occ_idx > 0 else 0.0
-            point_color = cmap_for_point(norm_val)
-
-            ax.scatter(point_coords[0], point_coords[1], color=point_color, 
-                       marker='o', s=20, alpha=0.8, zorder=2, 
-                       label=f"'{token_label}' (pos {token_idx})" if loop_k ==0 and num_loop_groups > 1 else None)
-
-
-        if num_loops > 0:
-            # Start and end markers (overall trajectory for this token)
-            ax.scatter(trajectory[0, 0], trajectory[0, 1], s=50, 
-                        color=token_cmap(token_idx % token_cmap.N), ec='black', marker='X', zorder=5,
-                        label=f"Start '{token_label}'" if num_loop_groups == 1 and token_idx == 0 else None) # Simplified legend
-            if num_loops > 1:
-                 ax.scatter(trajectory[-1, 0], trajectory[-1, 1], s=50, 
-                             color=token_cmap(token_idx % token_cmap.N), ec='black', marker='*', zorder=5,
-                             label=f"End '{token_label}'" if num_loop_groups == 1 and token_idx == 0 else None)
+    # Add colorbar to indicate loop depth
+    sm = plt.cm.ScalarMappable(cmap=depth_cmap)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Loop iteration depth')
 
 
     title_info = f'Combined 2D PCA Trajectories ({num_loops} Data Loops)'
@@ -252,7 +233,6 @@ def plot_pca_trajectories_2d(pca_transformed_reps_list, prompt_tokens_str, outpu
     plt.ylabel('Principal Component 2')
     
     handles, labels = ax.get_legend_handles_labels()
-    # Filter out duplicate labels for tokens if num_loop_groups > 1
     unique_labels = {}
     for handle, label in zip(handles, labels):
         if label not in unique_labels : unique_labels[label] = handle
@@ -262,22 +242,7 @@ def plot_pca_trajectories_2d(pca_transformed_reps_list, prompt_tokens_str, outpu
     plt.axhline(0, color='black', linewidth=0.5, alpha=0.5)
     plt.axvline(0, color='black', linewidth=0.5, alpha=0.5)
 
-    if num_loop_groups > 1:
-        palette_legend_handles = []
-        # Only add handles for groups that are actually present if num_loops < num_loop_groups
-        actual_groups_in_plot = sorted(list(set(idx % num_loop_groups for idx in range(num_loops))))
-        for grp_idx in actual_groups_in_plot:
-            cmap = PALETTES[grp_idx % len(PALETTES)]
-            patch = mpatches.Patch(color=cmap(0.6), label=f'Group {grp_idx}') # cmap(0.6) for representative color
-            palette_legend_handles.append(patch)
-        if palette_legend_handles:
-            from matplotlib.legend import Legend # Import Legend here
-            palette_labels = [h.get_label() for h in palette_legend_handles]
-            leg2 = Legend(ax, palette_legend_handles, palette_labels, title="Loop Groups", loc='lower right', fontsize='x-small', bbox_to_anchor=(1, 0))
-            ax.add_artist(leg2)
-            plt.tight_layout(rect=[0, 0, 0.80, 1]) # Adjust rect for two legends
-    else:
-        plt.tight_layout(rect=[0, 0, 0.85, 1])
+    plt.tight_layout(rect=[0, 0, 0.85, 1])
 
     plt.savefig(output_file_path, dpi=300)
     plt.close()
@@ -309,41 +274,19 @@ def plot_pca_trajectories_3d(pca_transformed_reps_list, prompt_tokens_str, outpu
 
     fig = plt.figure(figsize=(16, 12))
     ax = fig.add_subplot(111, projection='3d')
-    token_cmap = plt.cm.get_cmap('tab10', seq_len if seq_len <= 10 else 20)
+    # Simplified plotting: color by loop depth, marker shape by group, no per-token lines
+    depth_cmap = plt.cm.viridis
+    group_markers = ['o','s','^','D','P','X','v','<','>']
+    total_loops_for_norm = total_model_loops if total_model_loops and total_model_loops > 0 else num_loops
 
-    for token_idx in range(seq_len):
-        trajectory_3d = np.array([pca_transformed_reps_list[loop_idx][token_idx, :3] for loop_idx in range(num_loops)]) # Use first 3 components
-        token_label = prompt_tokens_str[token_idx] if token_idx < len(prompt_tokens_str) else f"Token {token_idx}"
-        
-        ax.plot(trajectory_3d[:, 0], trajectory_3d[:, 1], trajectory_3d[:, 2], linestyle='-',
-                color=token_cmap(token_idx % token_cmap.N), 
-                label=f"'{token_label}' (pos {token_idx})" if num_loop_groups == 1 else None, alpha=0.4, zorder=1)
-
-        for loop_k in range(num_loops):
-            point_coords = trajectory_3d[loop_k, :]
-            original_loop_idx = loop_k
-
-            group_idx = original_loop_idx % num_loop_groups
-            cmap_for_point = PALETTES[group_idx % len(PALETTES)]
-            occurrence = original_loop_idx // num_loop_groups
-            max_occ_idx = (total_model_loops - 1 - group_idx) // num_loop_groups
-            
-            norm_val = occurrence / max(1, max_occ_idx) if max_occ_idx >= 0 and max_occ_idx > 0 else 0.0
-            point_color = cmap_for_point(norm_val)
-            
-            ax.scatter(point_coords[0], point_coords[1], point_coords[2], color=point_color, 
-                       marker='o', s=15, alpha=0.8, zorder=2, depthshade=True,
-                       label=f"'{token_label}' (pos {token_idx})" if loop_k == 0 and num_loop_groups > 1 else None)
-
-
-        if num_loops > 0:
-            ax.scatter(trajectory_3d[0, 0], trajectory_3d[0, 1], trajectory_3d[0, 2], s=30, 
-                       color=token_cmap(token_idx % token_cmap.N), ec='black', marker='X', depthshade=True,
-                       label=f"Start '{token_label}'" if num_loop_groups == 1 and token_idx == 0 else None)
-            if num_loops > 1:
-                ax.scatter(trajectory_3d[-1, 0], trajectory_3d[-1, 1], trajectory_3d[-1, 2], s=30, 
-                           color=token_cmap(token_idx % token_cmap.N), ec='black', marker='*', depthshade=True,
-                           label=f"End '{token_label}'" if num_loop_groups == 1 and token_idx == 0 else None)
+    for loop_k in range(num_loops):
+        group_idx = loop_k % num_loop_groups
+        marker = group_markers[group_idx % len(group_markers)]
+        depth_norm = (loop_k + 1) / max(1, total_loops_for_norm)
+        color = depth_cmap(depth_norm)
+        pts3 = np.array([pca_transformed_reps_list[loop_k][token_idx, :3] for token_idx in range(seq_len)])
+        ax.scatter(pts3[:,0], pts3[:,1], pts3[:,2], color=color, marker=marker, s=12, alpha=0.6, zorder=2, depthshade=True,
+                   label=f"Group {group_idx}" if loop_k < num_loop_groups else None)
 
     title_info = f'Combined 3D PCA Trajectories ({num_loops} Data Loops)'
     config_info = f'Model: {total_model_loops} Loops, Groups: {num_loop_groups}, Structure: {loop_group_str}'
@@ -358,21 +301,11 @@ def plot_pca_trajectories_3d(pca_transformed_reps_list, prompt_tokens_str, outpu
         if label not in unique_labels : unique_labels[label] = handle
     ax.legend(unique_labels.values(), unique_labels.keys(), loc='center left', bbox_to_anchor=(1.1, 0.5), fontsize='small')
 
-    if num_loop_groups > 1:
-        palette_legend_handles = []
-        actual_groups_in_plot = sorted(list(set(idx % num_loop_groups for idx in range(num_loops))))
-        for grp_idx in actual_groups_in_plot:
-            cmap = PALETTES[grp_idx % len(PALETTES)]
-            patch = mpatches.Patch(color=cmap(0.6), label=f'Group {grp_idx}')
-            palette_legend_handles.append(patch)
-        if palette_legend_handles:
-            from matplotlib.legend import Legend # Ensure Legend is imported if not globally
-            palette_labels = [h.get_label() for h in palette_legend_handles]
-            leg2 = Legend(ax, palette_legend_handles, palette_labels, title="Loop Groups", loc='lower right', fontsize='x-small', bbox_to_anchor=(1.1, 0))
-            ax.add_artist(leg2)
-            fig.tight_layout(rect=[0, 0, 0.80, 1]) # Adjust rect for two legends
-    else:
-         fig.tight_layout(rect=[0, 0, 0.85, 1])
+    sm = plt.cm.ScalarMappable(cmap=depth_cmap)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Loop iteration depth')
+    fig.tight_layout(rect=[0, 0, 0.85, 1])
          
     plt.savefig(output_file_path, dpi=300)
     plt.close(fig)
@@ -1543,6 +1476,21 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                     log_dict[f"{model_name}/aggregated_convergence/{group_key}"] = wandb.Image(path)
             if log_dict:
                 wandb.log(log_dict)
+
+    # Log a per-checkpoint summary metric table for loop-30 values across metrics
+    try:
+        if wandb_logging_enabled and args.track_convergence_diagnostics and 'convergence_diagnostics' in results_for_comparison:
+            # Build a summary dict for last iteration (assumed loop index 30 or last available)
+            summary = {}
+            for group_key, metrics in results_for_comparison['convergence_diagnostics'].items():
+                for metric_key, series in metrics.items():
+                    if 'mean' in series and isinstance(series['mean'], (list, np.ndarray)) and len(series['mean']) > 0:
+                        idx = min(30, len(series['mean']) - 1)
+                        summary[f"{model_name}/loop30/{group_key}/{metric_key}"] = float(series['mean'][idx])
+            if summary:
+                wandb.log(summary)
+    except Exception as e:
+        print(f"Warning: failed to log loop-30 summary metrics: {e}")
 
     return results_for_comparison
 
