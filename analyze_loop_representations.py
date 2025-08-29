@@ -867,13 +867,23 @@ def plot_comparison_hausdorff(all_models_results, output_dir):
     index = np.arange(num_tokens)
     model_colors = plt.cm.get_cmap('tab10', num_models)
 
-    for i, model_name in enumerate(model_names):
+    # Color by checkpoint k with a gradient
+    def _extract_ckpt_k(name):
+        import re
+        m = re.search(r'(\d+)(?!.*\d)', name)
+        return int(m.group(1)) if m else None
+    model_k = [(mn, _extract_ckpt_k(mn)) for mn in model_names]
+    ks = [k for _, k in model_k if k is not None]
+    k_min, k_max = (min(ks), max(ks)) if ks else (0, 1)
+    cmap = plt.cm.viridis
+
+    for i, (model_name, k) in enumerate(model_k):
         model_results = models_with_data[model_name]['hausdorff_dimensions']
         means = [model_results['mean'].get(pos, np.nan) for pos in sorted_token_pos]
         stds = [model_results['std'].get(pos, 0) for pos in sorted_token_pos]
-        
         bar_positions = index + i * bar_width - (bar_width * (num_models -1) / 2)
-        ax.bar(bar_positions, means, bar_width, yerr=stds, label=model_name, color=model_colors(i), capsize=4)
+        color = cmap(0.0 if k is None or k_max == k_min else (k - k_min) / (k_max - k_min))
+        ax.bar(bar_positions, means, bar_width, yerr=stds, color=color, capsize=4)
 
     ax.set_xlabel('Token Position')
     ax.set_ylabel('Estimated Hausdorff Dimension (mean over prompts)')
@@ -883,7 +893,11 @@ def plot_comparison_hausdorff(all_models_results, output_dir):
     xtick_labels = [f"Pos {p.split('_')[1]}" for p in sorted_token_pos]
     ax.set_xticklabels(xtick_labels, rotation=45, ha="right")
     
-    ax.legend(title="Models")
+    # Add colorbar for k
+    sm = plt.cm.ScalarMappable(cmap=cmap)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Iterations (k)')
     plt.grid(True, axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
 
@@ -924,19 +938,32 @@ def plot_comparison_singular_values(all_models_results, output_dir):
     index = np.arange(num_params)
     model_colors = plt.cm.get_cmap('tab10', num_models)
 
-    for i, model_name in enumerate(model_names):
+    # Color by checkpoint k
+    def _extract_ckpt_k(name):
+        import re
+        m = re.search(r'(\d+)(?!.*\d)', name)
+        return int(m.group(1)) if m else None
+    model_k = [(mn, _extract_ckpt_k(mn)) for mn in model_names]
+    ks = [k for _, k in model_k if k is not None]
+    k_min, k_max = (min(ks), max(ks)) if ks else (0, 1)
+    cmap = plt.cm.viridis
+
+    for i, (model_name, k) in enumerate(model_k):
         model_svs = models_with_data[model_name]['singular_values']
         values = [model_svs.get(param, np.nan) for param in sorted_param_names]
-        
         bar_positions = index + i * bar_width - (bar_width * (num_models -1) / 2)
-        ax.bar(bar_positions, values, bar_width, label=model_name, color=model_colors(i))
+        color = cmap(0.0 if k is None or k_max == k_min else (k - k_min) / (k_max - k_min))
+        ax.bar(bar_positions, values, bar_width, color=color)
 
     ax.set_xlabel('Model Parameter')
     ax.set_ylabel('Maximum Singular Value')
     ax.set_title('Comparison of Max Singular Values Across Models')
     ax.set_xticks(index)
     ax.set_xticklabels(sorted_param_names, rotation=90, fontsize='small')
-    ax.legend(title="Models")
+    sm = plt.cm.ScalarMappable(cmap=cmap)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Iterations (k)')
     plt.grid(True, axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
 
