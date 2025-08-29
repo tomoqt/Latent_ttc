@@ -1143,6 +1143,83 @@ def plot_comparison_global_diagnostics(all_models_results, output_dir):
         paths[f"comparison_global_{metric}"] = plot_filepath
     return paths
 
+def plot_loop30_vs_checkpoint(all_models_results, output_dir, include_convergence=True, include_global=True):
+    """
+    For each metric, plot y = metric at loop index 30 (or last available) vs x = checkpoint (model name).
+    Generates separate plots for convergence diagnostics (per group) and global diagnostics.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    plots = {}
+
+    # Helper to create a bar plot
+    def _bar_plot(x_labels, y_values, title, ylabel, filename):
+        plt.figure(figsize=(max(10, len(x_labels) * 0.8), 6))
+        x = np.arange(len(x_labels))
+        plt.bar(x, y_values)
+        plt.xticks(x, x_labels, rotation=45, ha='right')
+        plt.ylabel(ylabel)
+        plt.title(title)
+        plt.grid(axis='y', linestyle='--', alpha=0.6)
+        plt.tight_layout()
+        path = os.path.join(output_dir, filename)
+        plt.savefig(path, dpi=300)
+        plt.close()
+        return path
+
+    # Convergence diagnostics (per group)
+    if include_convergence and any('convergence_diagnostics' in res for res in all_models_results.values()):
+        # Collect all group keys and metrics
+        all_groups = set()
+        for res in all_models_results.values():
+            if 'convergence_diagnostics' in res:
+                all_groups.update(res['convergence_diagnostics'].keys())
+        metric_keys = ['delta_norm', 'delta_angle', 'hidden_norm', 'logit_drift']
+
+        for group_key in sorted(all_groups):
+            for metric in metric_keys:
+                x_labels, y_vals = [], []
+                for model_name, res in all_models_results.items():
+                    if 'convergence_diagnostics' not in res: continue
+                    gdata = res['convergence_diagnostics'].get(group_key)
+                    if not gdata or metric not in gdata: continue
+                    mean_series = gdata[metric].get('mean')
+                    if mean_series is None or len(mean_series) == 0: continue
+                    idx = min(30, len(mean_series) - 1)
+                    val = mean_series[idx]
+                    if val is None or (isinstance(val, float) and np.isnan(val)): continue
+                    x_labels.append(model_name)
+                    y_vals.append(float(val))
+                if x_labels and y_vals:
+                    fname = f"loop30_vs_ckpt_{group_key}_{metric}.png"
+                    title = f"Loop-30 {metric} vs Checkpoint ({group_key})"
+                    ylabel = metric.replace('_', ' ').title()
+                    path = _bar_plot(x_labels, y_vals, title, ylabel, fname)
+                    plots[f"loop30_convergence_{group_key}_{metric}"] = path
+
+    # Global diagnostics (single series)
+    if include_global and any('global_diagnostics' in res for res in all_models_results.values()):
+        metric_keys = ['delta_norm', 'delta_angle', 'hidden_norm', 'logit_drift']
+        for metric in metric_keys:
+            x_labels, y_vals = [], []
+            for model_name, res in all_models_results.items():
+                g = res.get('global_diagnostics')
+                if not g or metric not in g: continue
+                mean_series = g[metric].get('mean')
+                if mean_series is None or len(mean_series) == 0: continue
+                idx = min(30, len(mean_series) - 1)
+                val = mean_series[idx]
+                if val is None or (isinstance(val, float) and np.isnan(val)): continue
+                x_labels.append(model_name)
+                y_vals.append(float(val))
+            if x_labels and y_vals:
+                fname = f"loop30_vs_ckpt_global_{metric}.png"
+                title = f"Loop-30 {metric} vs Checkpoint (Global)"
+                ylabel = metric.replace('_', ' ').title()
+                path = _bar_plot(x_labels, y_vals, title, ylabel, fname)
+                plots[f"loop30_global_{metric}"] = path
+
+    return plots
+
 def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_overrides, prompts, tokenizer_encode_fn, tokenizer_decode_fn_for_single_id_to_str, wandb_logging_enabled):
     """
     Performs a full analysis for a single model checkpoint over a list of prompts, aggregating the results.
@@ -1304,12 +1381,22 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                     if not transformed_reps_list: raise ValueError("PCA resulted in empty list.")
                     
                     pca2d_path, pca3d_path = None, None
+                    pca2d_zoom_path, pca3d_zoom_path = None, None
                     if args.n_pca_components >= 2:
                         pca2d_path = os.path.join(output_dir, "pca_trajectories_prompt_2D.png")
                         plot_pca_trajectories_2d([arr[:, :2] for arr in transformed_reps_list], prompt_tokens_str, pca2d_path, model_config=gptconf)
                     if args.n_pca_components >= 3:
                         pca3d_path = os.path.join(output_dir, "pca_trajectories_prompt_3D.png")
                         plot_pca_trajectories_3d([arr[:, :3] for arr in transformed_reps_list], prompt_tokens_str, pca3d_path, model_config=gptconf)
+
+                    # Zoomed combined trajectories (last K loops)
+                    last_k = max(1, min(int(getattr(args, 'num_last_steps_for_zoom', 15)), len(transformed_reps_list)))
+                    if args.n_pca_components >= 2 and last_k < len(transformed_reps_list):
+                        pca2d_zoom_path = os.path.join(output_dir, f"pca_trajectories_prompt_2D_zoomed_last{last_k}.png")
+                        plot_pca_trajectories_2d([arr[:, :2] for arr in transformed_reps_list[-last_k:]], prompt_tokens_str, pca2d_zoom_path, model_config=gptconf)
+                    if args.n_pca_components >= 3 and last_k < len(transformed_reps_list):
+                        pca3d_zoom_path = os.path.join(output_dir, f"pca_trajectories_prompt_3D_zoomed_last{last_k}.png")
+                        plot_pca_trajectories_3d([arr[:, :3] for arr in transformed_reps_list[-last_k:]], prompt_tokens_str, pca3d_zoom_path, model_config=gptconf)
                     
                     individual_plots_dir = os.path.join(output_dir, "individual_token_plots")
                     os.makedirs(individual_plots_dir, exist_ok=True)
@@ -1320,6 +1407,15 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                         if args.n_pca_components >=3:
                             plot_single_token_pca_trajectory(transformed_reps_list, token_idx, prompt_tokens_str[token_idx], os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_3D_full.png"), is_3d_plot=True, model_config=gptconf)
 
+                    # Zoomed individual token plots for a subset (last K loops)
+                    max_token_logs = min(5, prompt_seq_len)
+                    for token_idx in range(max_token_logs):
+                        sanitized_token_str = sanitize_filename_part(prompt_tokens_str[token_idx])
+                        if args.n_pca_components >=2 and last_k < len(transformed_reps_list):
+                            plot_single_token_pca_trajectory(transformed_reps_list, token_idx, prompt_tokens_str[token_idx], os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_2D_zoomed_last{last_k}.png"), is_3d_plot=False, is_zoomed_view=True, num_last_steps_to_zoom=last_k, model_config=gptconf)
+                        if args.n_pca_components >=3 and last_k < len(transformed_reps_list):
+                            plot_single_token_pca_trajectory(transformed_reps_list, token_idx, prompt_tokens_str[token_idx], os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_3D_zoomed_last{last_k}.png"), is_3d_plot=True, is_zoomed_view=True, num_last_steps_to_zoom=last_k, model_config=gptconf)
+
                     # Log trajectory plots to WandB (combined, and a small sample of individual tokens)
                     if wandb_logging_enabled:
                         wandb_payload = {}
@@ -1327,16 +1423,26 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                             wandb_payload[f"{model_name}/pca_trajectories/combined_2D_first_prompt"] = wandb.Image(pca2d_path)
                         if pca3d_path and os.path.exists(pca3d_path):
                             wandb_payload[f"{model_name}/pca_trajectories/combined_3D_first_prompt"] = wandb.Image(pca3d_path)
+                        if pca2d_zoom_path and os.path.exists(pca2d_zoom_path):
+                            wandb_payload[f"{model_name}/pca_trajectories/combined_2D_zoom_first_prompt"] = wandb.Image(pca2d_zoom_path)
+                        if pca3d_zoom_path and os.path.exists(pca3d_zoom_path):
+                            wandb_payload[f"{model_name}/pca_trajectories/combined_3D_zoom_first_prompt"] = wandb.Image(pca3d_zoom_path)
                         # Log up to first 5 token plots (2D if available else 3D)
                         max_token_logs = min(5, prompt_seq_len)
                         for token_idx in range(max_token_logs):
                             sanitized_token_str = sanitize_filename_part(prompt_tokens_str[token_idx])
                             tok2d = os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_2D_full.png")
                             tok3d = os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_3D_full.png")
+                            tok2d_zoom = os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_2D_zoomed_last{last_k}.png")
+                            tok3d_zoom = os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_3D_zoomed_last{last_k}.png")
                             if os.path.exists(tok2d):
                                 wandb_payload[f"{model_name}/pca_trajectories/token_{token_idx}_2D_first_prompt"] = wandb.Image(tok2d)
                             elif os.path.exists(tok3d):
                                 wandb_payload[f"{model_name}/pca_trajectories/token_{token_idx}_3D_first_prompt"] = wandb.Image(tok3d)
+                            if os.path.exists(tok2d_zoom):
+                                wandb_payload[f"{model_name}/pca_trajectories/token_{token_idx}_2D_zoom_first_prompt"] = wandb.Image(tok2d_zoom)
+                            elif os.path.exists(tok3d_zoom):
+                                wandb_payload[f"{model_name}/pca_trajectories/token_{token_idx}_3D_zoom_first_prompt"] = wandb.Image(tok3d_zoom)
                         if wandb_payload:
                             wandb.log(wandb_payload)
                 except (ValueError, IndexError) as e:
@@ -1656,6 +1762,10 @@ def main():
         if args.track_global_diagnostics:
             paths = plot_comparison_global_diagnostics(all_models_results, comparison_output_dir)
             comparison_plots_paths.update(paths)
+
+        # Add loop-30 vs checkpoint plots
+        loop30_paths = plot_loop30_vs_checkpoint(all_models_results, comparison_output_dir, include_convergence=args.track_convergence_diagnostics, include_global=args.track_global_diagnostics)
+        comparison_plots_paths.update(loop30_paths)
 
         if wandb_logging_enabled and comparison_plots_paths:
             print("\nLogging comparison plots to WandB...")

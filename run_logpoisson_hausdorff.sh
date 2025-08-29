@@ -119,7 +119,7 @@ CALC_JACOBIAN_TRAJ="${CALC_JACOBIAN_TRAJ:-False}"
 TRACK_GLOBAL_DX="${TRACK_GLOBAL_DX:-True}"
 PLOT_SINGULAR_VALUES="${PLOT_SINGULAR_VALUES:-True}"
 
-# WandB logging for analysis (enabled by default to track Hausdorff across checkpoints)
+# WandB logging for analysis (enabled by default to track plots across checkpoints)
 WANDB_PROJECT_ANALYSIS="${WANDB_PROJECT_ANALYSIS:-gpt2-looped-analysis}"
 WANDB_RUN_NAME_ANALYSIS="${WANDB_RUN_NAME_ANALYSIS:-${EXP_NAME}-analysis}"
 
