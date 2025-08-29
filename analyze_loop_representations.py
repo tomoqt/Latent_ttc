@@ -1370,10 +1370,13 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                     pca_model, transformed_reps_list = compute_pca_and_transform(loop_reps, n_components=args.n_pca_components)
                     if not transformed_reps_list: raise ValueError("PCA resulted in empty list.")
                     
+                    pca2d_path, pca3d_path = None, None
                     if args.n_pca_components >= 2:
-                        plot_pca_trajectories_2d([arr[:, :2] for arr in transformed_reps_list], prompt_tokens_str, os.path.join(output_dir, "pca_trajectories_prompt_2D.png"), model_config=gptconf)
+                        pca2d_path = os.path.join(output_dir, "pca_trajectories_prompt_2D.png")
+                        plot_pca_trajectories_2d([arr[:, :2] for arr in transformed_reps_list], prompt_tokens_str, pca2d_path, model_config=gptconf)
                     if args.n_pca_components >= 3:
-                        plot_pca_trajectories_3d([arr[:, :3] for arr in transformed_reps_list], prompt_tokens_str, os.path.join(output_dir, "pca_trajectories_prompt_3D.png"), model_config=gptconf)
+                        pca3d_path = os.path.join(output_dir, "pca_trajectories_prompt_3D.png")
+                        plot_pca_trajectories_3d([arr[:, :3] for arr in transformed_reps_list], prompt_tokens_str, pca3d_path, model_config=gptconf)
                     
                     individual_plots_dir = os.path.join(output_dir, "individual_token_plots")
                     os.makedirs(individual_plots_dir, exist_ok=True)
@@ -1383,6 +1386,26 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                             plot_single_token_pca_trajectory(transformed_reps_list, token_idx, prompt_tokens_str[token_idx], os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_2D_full.png"), is_3d_plot=False, model_config=gptconf)
                         if args.n_pca_components >=3:
                             plot_single_token_pca_trajectory(transformed_reps_list, token_idx, prompt_tokens_str[token_idx], os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_3D_full.png"), is_3d_plot=True, model_config=gptconf)
+
+                    # Log trajectory plots to WandB (combined, and a small sample of individual tokens)
+                    if wandb_logging_enabled:
+                        wandb_payload = {}
+                        if pca2d_path and os.path.exists(pca2d_path):
+                            wandb_payload[f"{model_name}/pca_trajectories/combined_2D_first_prompt"] = wandb.Image(pca2d_path)
+                        if pca3d_path and os.path.exists(pca3d_path):
+                            wandb_payload[f"{model_name}/pca_trajectories/combined_3D_first_prompt"] = wandb.Image(pca3d_path)
+                        # Log up to first 5 token plots (2D if available else 3D)
+                        max_token_logs = min(5, prompt_seq_len)
+                        for token_idx in range(max_token_logs):
+                            sanitized_token_str = sanitize_filename_part(prompt_tokens_str[token_idx])
+                            tok2d = os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_2D_full.png")
+                            tok3d = os.path.join(individual_plots_dir, f"token_{token_idx}_{sanitized_token_str}_pca_3D_full.png")
+                            if os.path.exists(tok2d):
+                                wandb_payload[f"{model_name}/pca_trajectories/token_{token_idx}_2D_first_prompt"] = wandb.Image(tok2d)
+                            elif os.path.exists(tok3d):
+                                wandb_payload[f"{model_name}/pca_trajectories/token_{token_idx}_3D_first_prompt"] = wandb.Image(tok3d)
+                        if wandb_payload:
+                            wandb.log(wandb_payload)
                 except (ValueError, IndexError) as e:
                     print(f"  Warning: Could not generate PCA plots for first prompt: {e}")
             

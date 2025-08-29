@@ -154,6 +154,11 @@ class GPTConfig:
     effective_n_layer: float = None # Effective number of layers considering loops
     automatic_loop_exit: bool = False # Flag to automatically exit loops based on convergence of representations
     automatic_loop_exit_threshold: float = 0.01 # Threshold for automatic loop exit
+    # Early-exit modalities
+    automatic_loop_exit_mode: str = 'step_norm_diff' # 'step_norm_diff' (default), 'kl_div_diff'
+    automatic_loop_exit_kl_diff_threshold: Optional[float] = None # If None, falls back to automatic_loop_exit_threshold
+    automatic_loop_exit_step_norm_diff_threshold: Optional[float] = None # If None, falls back to automatic_loop_exit_threshold
+    automatic_loop_exit_acceleration_threshold: Optional[float] = None # If None, falls back to automatic_loop_exit_threshold
     # Backprop configuration
     loops_backprop_depth: Optional[int] = 8 # If set to a positive integer k, gradients are only computed for the last-k loop iterations in every looped group. Default k=8.
 
@@ -383,6 +388,11 @@ class GPT(nn.Module):
                 x_original_group_input = x.clone()
                 current_loop_iteration_input = x_original_group_input
                 prev_diff_norm_for_group = None # For automatic loop exit calculation
+                prev_step_tensor_for_group = None # For acceleration mode (x_{k+1} - x_k)
+
+                # Trackers for early-exit modalities
+                prev_diff_norm_for_group = None # For automatic loop exit: step-norm diff
+                prev_kl_for_group = None        # For automatic loop exit: KL-divergence diff
 
                 for loop_iter_idx in range(num_loops_for_this_group):
                     x_pass_input = current_loop_iteration_input
@@ -509,18 +519,66 @@ class GPT(nn.Module):
 
                     # Automatic loop exit logic
                     if self.config.automatic_loop_exit and num_loops_for_this_group > 1 and b == 1:
-                        # Calculate L2 norm of (output - input) for the current group pass,
-                        # then mean over sequence and batch for a scalar.
-                        current_iter_change_norm_tensor = torch.norm(x_group_output_this_iter - x_input_to_group_layers_this_iter, p=2, dim=-1) # (B, T)
-                        current_iter_change_norm = current_iter_change_norm_tensor.mean(dim=-1) # Scalar
+                        mode = getattr(self.config, 'automatic_loop_exit_mode', 'step_norm_diff')
+                        base_threshold = self.config.automatic_loop_exit_threshold
 
-                        if prev_diff_norm_for_group is not None and loop_iter_idx > 0: # Need at least two norms to compare
-                            diff_of_diffs = torch.abs(current_iter_change_norm - prev_diff_norm_for_group)
-                            if diff_of_diffs < self.config.automatic_loop_exit_threshold:
-                                # print(f"DEBUG: Auto exiting loop for group {current_group_indices} at iter {loop_iter_idx+1}/{num_loops_for_this_group}. Diff of diffs: {diff_of_diffs.item()}")
-                                break # Exit this group's loop
-                        
-                        prev_diff_norm_for_group = current_iter_change_norm
+                        if mode == 'kl_div_diff':
+                            # Compute KL(p_k || p_{k+1}) and compare difference to previous KL
+                            with torch.no_grad():
+                                logits_k = self.lm_head(self.transformer.ln_f(x_input_to_group_layers_this_iter))
+                                logits_k_plus_1 = self.lm_head(self.transformer.ln_f(x_group_output_this_iter))
+                                log_probs_k = F.log_softmax(logits_k, dim=-1)
+                                log_probs_k_plus_1 = F.log_softmax(logits_k_plus_1, dim=-1)
+                                current_kl = F.kl_div(log_probs_k, log_probs_k_plus_1, reduction='batchmean', log_target=True)
+
+                            kl_threshold = (
+                                self.config.automatic_loop_exit_kl_diff_threshold
+                                if self.config.automatic_loop_exit_kl_diff_threshold is not None
+                                else base_threshold
+                            )
+
+                            if prev_kl_for_group is not None and loop_iter_idx > 0:
+                                kl_diff = torch.abs(current_kl - prev_kl_for_group)
+                                if kl_diff < kl_threshold:
+                                    break
+                            prev_kl_for_group = current_kl
+
+                        elif mode == 'acceleration':
+                            # Compute step tensors s_k = x_{k+1} - x_k, measure ||s_k - s_{k-1}||
+                            step_tensor = x_group_output_this_iter - x_input_to_group_layers_this_iter
+                            accel_threshold = (
+                                self.config.automatic_loop_exit_acceleration_threshold
+                                if self.config.automatic_loop_exit_acceleration_threshold is not None
+                                else base_threshold
+                            )
+                            if prev_step_tensor_for_group is not None and loop_iter_idx > 0:
+                                accel_norm_tensor = torch.norm(step_tensor - prev_step_tensor_for_group, p=2, dim=-1) # (B, T)
+                                accel_norm = accel_norm_tensor.mean(dim=-1) # Scalar per batch item
+                                if accel_norm < accel_threshold:
+                                    break
+                            prev_step_tensor_for_group = step_tensor
+
+                        else: # 'step_norm_diff' (default)
+                            # Calculate L2 norm of (output - input) for the current group pass,
+                            # then mean over sequence and batch for a scalar.
+                            current_iter_change_norm_tensor = torch.norm(
+                                x_group_output_this_iter - x_input_to_group_layers_this_iter,
+                                p=2,
+                                dim=-1
+                            ) # (B, T)
+                            current_iter_change_norm = current_iter_change_norm_tensor.mean(dim=-1) # Scalar per batch item
+
+                            step_norm_threshold = (
+                                self.config.automatic_loop_exit_step_norm_diff_threshold
+                                if self.config.automatic_loop_exit_step_norm_diff_threshold is not None
+                                else base_threshold
+                            )
+
+                            if prev_diff_norm_for_group is not None and loop_iter_idx > 0: # Need at least two norms to compare
+                                diff_of_diffs = torch.abs(current_iter_change_norm - prev_diff_norm_for_group)
+                                if diff_of_diffs < step_norm_threshold:
+                                    break # Exit this group's loop
+                            prev_diff_norm_for_group = current_iter_change_norm
                     elif self.config.automatic_loop_exit and num_loops_for_this_group > 1 and b > 1:
                         if loop_iter_idx == 0: # Print warning only once per group if condition met
                             print(f"Warning: Batch size ({b}) > 1. Automatic loop exit is disabled for group {current_group_indices} to prevent potential tensor ambiguity. Loop will run for {num_loops_for_this_group} iterations.")
