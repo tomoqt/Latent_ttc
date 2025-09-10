@@ -142,7 +142,14 @@ class GPTConfig:
     loop_counts: list[int] = None # Number of loops for each group in loop_groups. If None or entry <=0, max_loops is used for that group.
     loop_noise_scale: float = 1.0 # Scale for Gaussian noise added in the first multi-loop iteration of a group (0.0 means no noise)
     concatenate_initial_representation: bool = True # Concatenate initial representation before looping, instead of summing to residual stream, and adapt it
-    loops_representation: bool = False # Flag to track and return representations across loops (for debugging/analysis)
+    
+    # Analysis/Debug flags
+    loops_representation: bool = False # Flag to track and return representations across loops
+    track_convergence_diagnostics: bool = False # Flag to track and return convergence diagnostics across loops
+    calculate_jacobian: bool = False # Flag to calculate Jacobian and its eigenvalues at the end of loops
+    calculate_jacobian_trajectory: bool = False # Flag to calculate the trajectory of the max eigenvalue of the Jacobian across loops
+    track_global_diagnostics: bool = False # Flag to track convergence diagnostics across the entire forward pass
+
     max_loops: int = 30
     effective_n_layer: float = None # Effective number of layers considering loops
     automatic_loop_exit: bool = False # Flag to automatically exit loops based on convergence of representations
@@ -237,6 +244,56 @@ class GPT(nn.Module):
             std = math.sqrt(variance)
             torch.nn.init.normal_(module.weight, mean=0.0, std=std)
 
+    def _calculate_global_diagnostics(self, x_history):
+        diagnostics = {
+            'delta_norm': [],
+            'delta_angle': [],
+            'hidden_norm': [],
+            'logit_drift': []
+        }
+        if len(x_history) < 2:
+            return diagnostics
+            
+        prev_delta_for_angle = None
+        prev_logits_for_kl = None
+
+        for i in range(len(x_history) - 1):
+            x_k = x_history[i]
+            x_k_plus_1 = x_history[i+1]
+
+            # 1. Δ-norm
+            delta_k = x_k_plus_1 - x_k
+            delta_norm = torch.norm(delta_k, p=2, dim=-1).mean().item()
+            diagnostics['delta_norm'].append(delta_norm)
+
+            # 2. Δ-angle
+            if prev_delta_for_angle is not None:
+                delta_angle = F.cosine_similarity(delta_k, prev_delta_for_angle, dim=-1).mean().item()
+                diagnostics['delta_angle'].append(delta_angle)
+            else:
+                diagnostics['delta_angle'].append(None)
+            prev_delta_for_angle = delta_k
+
+            # 3. Hidden-vector norm
+            hidden_norm = torch.norm(x_k, p=2, dim=-1).mean().item()
+            diagnostics['hidden_norm'].append(hidden_norm)
+
+            # 4. Logit drift
+            with torch.no_grad():
+                logits_k_plus_1 = self.lm_head(self.transformer.ln_f(x_k_plus_1))
+                probs_k_plus_1 = F.log_softmax(logits_k_plus_1, dim=-1)
+            if prev_logits_for_kl is not None:
+                kl_div = F.kl_div(prev_logits_for_kl, probs_k_plus_1, reduction='batchmean', log_target=True).item()
+                diagnostics['logit_drift'].append(kl_div)
+            else:
+                diagnostics['logit_drift'].append(None)
+            
+            with torch.no_grad():
+                logits_k = self.lm_head(self.transformer.ln_f(x_k))
+                prev_logits_for_kl = F.log_softmax(logits_k, dim=-1)
+        
+        return diagnostics
+
     def forward(self, idx, targets=None):
         device = idx.device
         b, t = idx.size()
@@ -252,6 +309,14 @@ class GPT(nn.Module):
         x = self.transformer.drop(x)
 
         loop_representations = [] if self.config.loops_representation else None
+        
+        #  diagnostics tracking
+        convergence_diagnostics = {} if self.config.track_convergence_diagnostics else None
+        jacobian_eigvals = {} if self.config.calculate_jacobian else None
+        jacobian_eigval_trajectory = {} if self.config.calculate_jacobian_trajectory else None
+        x_history_for_global_diags = [] if self.config.track_global_diagnostics else None
+        if x_history_for_global_diags is not None:
+            x_history_for_global_diags.append(x.clone())
         
         processed_in_loop_group = [False] * self.config.n_layer
 
@@ -295,6 +360,23 @@ class GPT(nn.Module):
             if is_part_of_defined_group: # current_group_indices will be set
                # print(f"Processing group {current_group_indices} with {num_loops_for_this_group} iteration(s).")
                 
+                # For convergence diagnostics
+                if self.config.track_convergence_diagnostics:
+                    group_key = f"group_{'_'.join(map(str, current_group_indices))}"
+                    convergence_diagnostics[group_key] = {
+                        'delta_norm': [],
+                        'delta_angle': [],
+                        'hidden_norm': [],
+                        'logit_drift': []
+                    }
+                    prev_delta_for_angle = None
+                    prev_logits_for_kl = None
+
+                if self.config.calculate_jacobian_trajectory:
+                    group_key = f"group_{'_'.join(map(str, current_group_indices))}"
+                    # Trajectory for each token
+                    jacobian_eigval_trajectory[group_key] = [[] for _ in range(t)]
+
                 for i in current_group_indices:
                     processed_in_loop_group[i] = True
 
@@ -323,6 +405,10 @@ class GPT(nn.Module):
                             x_pass_input = torch.cat([x_original_group_input, x_pass_input], dim=-1) # x_pass_input is previous loop's output
                         else:
                             x_pass_input = x_original_group_input + x_pass_input # x_pass_input is previous loop's output
+                    # Case for first multi-loop iteration without noise
+                    elif num_loops_for_this_group > 1 and loop_iter_idx == 0 and self.config.loop_noise_scale == 0.0:
+                        if self.concatenate_initial_representation:
+                            x_pass_input = torch.cat([x_pass_input, x_pass_input], dim=-1)
                     
                     # Adapt dimensionality if concatenation is on
                     needs_adapter = False
@@ -334,11 +420,9 @@ class GPT(nn.Module):
                              needs_adapter = True
                         # Case 2: Multi-loop (num_loops_for_this_group > 1)
                         elif num_loops_for_this_group > 1:
-                            if loop_iter_idx == 0 and self.config.loop_noise_scale == 0.0: # First multi-loop iter, no noise
-                                x_pass_input = torch.cat([x_pass_input, x_pass_input], dim=-1)
-                                needs_adapter = True
-                            elif loop_iter_idx > 0 or (loop_iter_idx == 0 and self.config.loop_noise_scale > 0.0): # Subsequent or first-with-noise
-                                needs_adapter = True 
+                            # The logic to prepare x_pass_input is now handled above.
+                            # For multi-loop with concatenation, adapter is always needed.
+                            needs_adapter = True
                     
                     # Determine whether this iteration should contribute gradients.
                     grad_this_iter = True
@@ -367,10 +451,64 @@ class GPT(nn.Module):
                         x_group_output_this_iter = x_intermediate_in_group
                         # --- End Group Pass ---
                     
+                    # --- Convergence Diagnostics Calculation ---
+                    if self.config.track_convergence_diagnostics:
+                        x_k = current_loop_iteration_input
+                        x_k_plus_1 = x_group_output_this_iter
+
+                        # 1. Δ-norm: ||x_{k+1} - x_k||_2
+                        delta_k = x_k_plus_1 - x_k
+                        delta_norm = torch.norm(delta_k, p=2, dim=-1).mean().item()
+                        convergence_diagnostics[group_key]['delta_norm'].append(delta_norm)
+
+                        # 2. Δ-angle: cos(Δ_k, Δ_{k-1})
+                        if prev_delta_for_angle is not None:
+                            delta_angle = F.cosine_similarity(delta_k, prev_delta_for_angle, dim=-1).mean().item()
+                            convergence_diagnostics[group_key]['delta_angle'].append(delta_angle)
+                        else:
+                            convergence_diagnostics[group_key]['delta_angle'].append(None) # No angle for first step
+                        prev_delta_for_angle = delta_k
+
+                        # 3. Hidden-vector norm: ||x_k||
+                        hidden_norm = torch.norm(x_k, p=2, dim=-1).mean().item()
+                        convergence_diagnostics[group_key]['hidden_norm'].append(hidden_norm)
+
+                        # 4. Logit drift: KL(p_k || p_{k+1})
+                        with torch.no_grad():
+                            logits_k = self.lm_head(self.transformer.ln_f(x_k))
+                            probs_k = F.log_softmax(logits_k, dim=-1)
+                        if prev_logits_for_kl is not None:
+                            kl_div = F.kl_div(prev_logits_for_kl, probs_k, reduction='batchmean', log_target=True).item()
+                            convergence_diagnostics[group_key]['logit_drift'].append(kl_div)
+                        else:
+                             convergence_diagnostics[group_key]['logit_drift'].append(None)
+                        prev_logits_for_kl = probs_k
+
                     current_loop_iteration_input = x_group_output_this_iter # Update before potential break
 
                     if self.config.loops_representation: # Store representation ONLY from within an active loop group iteration
                         loop_representations.append(current_loop_iteration_input.clone())
+
+                    if x_history_for_global_diags is not None:
+                        x_history_for_global_diags.append(current_loop_iteration_input.clone())
+                    
+                    # --- Jacobian Trajectory Calculation (inside loop) ---
+                    if self.config.calculate_jacobian_trajectory and b == 1:
+                        def F_once_traj(x_token, group_indices):
+                            x_input = x_token.unsqueeze(0).unsqueeze(0)
+                            x_output = x_input
+                            for layer_idx_in_group in group_indices:
+                                x_output = self.transformer.h[layer_idx_in_group](x_output)
+                            return x_output.squeeze(0).squeeze(0)
+
+                        group_key = f"group_{'_'.join(map(str, current_group_indices))}"
+                        for t_idx in range(t):
+                            x_star_token = current_loop_iteration_input[0, t_idx, :].detach()
+                            jacobian_func = lambda x: F_once_traj(x, current_group_indices)
+                            J = torch.autograd.functional.jacobian(jacobian_func, x_star_token)
+                            eigvals = torch.linalg.eigvals(J)
+                            max_abs_eigval = torch.max(torch.abs(eigvals)).cpu().item()
+                            jacobian_eigval_trajectory[group_key][t_idx].append(max_abs_eigval)
 
                     # Automatic loop exit logic
                     if self.config.automatic_loop_exit and num_loops_for_this_group > 1 and b == 1:
@@ -395,12 +533,40 @@ class GPT(nn.Module):
                     # if loop_iter_idx == num_loops_for_this_group - 1:
                     #    break # This is redundant due to the for loop's natural termination
                 
+                # --- Jacobian Calculation at the end of the loop group ---
+                if self.config.calculate_jacobian and b == 1: # Only for batch size 1 for simplicity
+                    
+                    def F_once(x_token, group_indices):
+                        # x_token has shape (n_embd,). Model blocks expect (B, T, C)
+                        x_input = x_token.unsqueeze(0).unsqueeze(0) # -> (1, 1, n_embd)
+                        x_output = x_input
+                        for layer_idx_in_group in group_indices:
+                            x_output = self.transformer.h[layer_idx_in_group](x_output)
+                        return x_output.squeeze(0).squeeze(0)
+
+                    x_star_final = current_loop_iteration_input # (1, T, C)
+                    group_key = f"group_{'_'.join(map(str, current_group_indices))}"
+                    jacobian_eigvals[group_key] = []
+                    
+                    for t_idx in range(x_star_final.shape[1]):
+                        x_star_token = x_star_final[0, t_idx, :] # (C,)
+                        
+                        # Use a closure for the jacobian function to pass group_indices
+                        jacobian_func = lambda x: F_once(x, current_group_indices)
+                        
+                        # Detach to treat it as a constant input for Jacobian calculation
+                        J = torch.autograd.functional.jacobian(jacobian_func, x_star_token.detach())  # (C, C)
+                        eigvals = torch.linalg.eigvals(J) # Complex tensor of shape (C,)
+                        jacobian_eigvals[group_key].append(eigvals.cpu().numpy())
+                
                 x = current_loop_iteration_input # Final output after all iterations (or early exit) for this group
                 current_layer_idx = current_group_indices[-1] + 1
             
             else:
                 # --- Normal Processing for a single layer (not in a defined group or loop_groups is None) ---
                 x = self.transformer.h[current_layer_idx](x)
+                if x_history_for_global_diags is not None:
+                    x_history_for_global_diags.append(x.clone())
                 # if self.config.loops_representation: # Removed: No longer collect reps for single-pass non-grouped layers
                 #     loop_representations.append(x.clone())
                 current_layer_idx += 1
@@ -416,8 +582,24 @@ class GPT(nn.Module):
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
+        # --- Final processing of collected data ---
+        global_diagnostics = self._calculate_global_diagnostics(x_history_for_global_diags) if x_history_for_global_diags else None
+
+        # Determine what to return
+        return_vals = [logits, loss]
         if self.config.loops_representation:
-            return logits, loss, loop_representations
+            return_vals.append(loop_representations)
+        if self.config.track_convergence_diagnostics:
+            return_vals.append(convergence_diagnostics)
+        if self.config.calculate_jacobian:
+            return_vals.append(jacobian_eigvals)
+        if self.config.calculate_jacobian_trajectory:
+            return_vals.append(jacobian_eigval_trajectory)
+        if self.config.track_global_diagnostics:
+            return_vals.append(global_diagnostics)
+            
+        if len(return_vals) > 2:
+            return tuple(return_vals)
         else:
             return logits, loss
 
@@ -540,41 +722,67 @@ class GPT(nn.Module):
         If return_first_step_loop_reps is True and config.loops_representation is True,
         this will also return the loop representations from the very first forward pass used for generation.
         """
-        first_step_loop_reps_collected = None
+        # Additional returns for analysis, captured only on the first generation step
+        first_step_outputs = {
+            "loop_reps": None,
+            "convergence_diagnostics": None,
+            "jacobian_eigvals": None,
+            "jacobian_eigval_trajectory": None,
+            "global_diagnostics": None,
+        }
         initial_call_for_reps = True # Flag to capture reps only on the first meaningful call
 
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             
-            current_loop_reps_for_this_step = None # Initialize for this iteration
             # forward the model to get the logits for the index in the sequence
-            if self.config.loops_representation:
-                output_from_forward = self(idx_cond)
-                # Ensure output_from_forward is a tuple and has 3 elements as expected
-                if isinstance(output_from_forward, tuple) and len(output_from_forward) == 3:
-                    logits, _, current_loop_reps_for_this_step = output_from_forward
-                else:
-                    # This case should ideally not be reached if config.loops_representation is True
-                    # and the model's forward pass behaves as expected.
-                    print("Warning: GPT.forward() did not return 3 values (logits, loss, loop_reps) even though config.loops_representation is True.")
-                    # Attempt to gracefully handle cases where only (logits, loss) or just logits are returned.
-                    if isinstance(output_from_forward, tuple) and len(output_from_forward) >= 1:
-                        logits = output_from_forward[0]
-                    else: # If it's just a tensor (logits)
-                        logits = output_from_forward
-                    # current_loop_reps_for_this_step remains None
-            else: # If loops_representation is False
-                output_from_forward = self(idx_cond)
-                if isinstance(output_from_forward, tuple) and len(output_from_forward) >= 1:
-                    logits = output_from_forward[0]
-                else:
-                    logits = output_from_forward
-                # current_loop_reps_for_this_step remains None
-            
-            if return_first_step_loop_reps and initial_call_for_reps and current_loop_reps_for_this_step is not None:
-                first_step_loop_reps_collected = current_loop_reps_for_this_step
-                initial_call_for_reps = False # Avoid re-capturing on subsequent generation steps
+            output_from_forward = self(idx_cond)
+
+            # Unpack the potentially variable number of return values from forward()
+            if isinstance(output_from_forward, tuple):
+                logits = output_from_forward[0]
+                # Default other potential returns to None
+                loop_reps, diags, eigvals, eigval_traj, global_diags = None, None, None, None, None
+                
+                # This logic assumes the specific order of optional returns from forward()
+                next_val_idx = 2 # loss is at index 1, optional values start after
+                if self.config.loops_representation:
+                    if len(output_from_forward) > next_val_idx:
+                        loop_reps = output_from_forward[next_val_idx]
+                        next_val_idx += 1
+                if self.config.track_convergence_diagnostics:
+                     if len(output_from_forward) > next_val_idx:
+                        diags = output_from_forward[next_val_idx]
+                        next_val_idx += 1
+                if self.config.calculate_jacobian:
+                     if len(output_from_forward) > next_val_idx:
+                        eigvals = output_from_forward[next_val_idx]
+                        next_val_idx += 1
+                if self.config.calculate_jacobian_trajectory:
+                     if len(output_from_forward) > next_val_idx:
+                        eigval_traj = output_from_forward[next_val_idx]
+                        next_val_idx += 1
+                if self.config.track_global_diagnostics:
+                     if len(output_from_forward) > next_val_idx:
+                        global_diags = output_from_forward[next_val_idx]
+                        next_val_idx += 1
+            else: # Should not happen if forward() is structured as above
+                logits = output_from_forward
+                loop_reps, diags, eigvals, eigval_traj, global_diags = None, None, None, None, None
+
+            if initial_call_for_reps:
+                if return_first_step_loop_reps and loop_reps:
+                    first_step_outputs["loop_reps"] = loop_reps
+                if self.config.track_convergence_diagnostics and diags:
+                    first_step_outputs["convergence_diagnostics"] = diags
+                if self.config.calculate_jacobian and eigvals:
+                    first_step_outputs["jacobian_eigvals"] = eigvals
+                if self.config.calculate_jacobian_trajectory and eigval_traj:
+                    first_step_outputs["jacobian_eigval_trajectory"] = eigval_traj
+                if self.config.track_global_diagnostics and global_diags:
+                    first_step_outputs["global_diagnostics"] = global_diags
+                initial_call_for_reps = False
             
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
@@ -591,7 +799,24 @@ class GPT(nn.Module):
 
         # If max_new_tokens is 0, the loop doesn't run, and first_step_loop_reps_collected remains None.
         # This is acceptable; representations are tied to a generation step.
+        
+        # Consolidate return values based on what was requested and collected.
+        # The primary return is always `idx`.
+        final_returns = [idx]
         if return_first_step_loop_reps:
-            return idx, first_step_loop_reps_collected
+            final_returns.append(first_step_outputs["loop_reps"])
+        
+        # These are returned if their config flags are on, not controlled by a generate() arg.
+        if self.config.track_convergence_diagnostics:
+            final_returns.append(first_step_outputs["convergence_diagnostics"])
+        if self.config.calculate_jacobian:
+            final_returns.append(first_step_outputs["jacobian_eigvals"])
+        if self.config.calculate_jacobian_trajectory:
+            final_returns.append(first_step_outputs["jacobian_eigval_trajectory"])
+        if self.config.track_global_diagnostics:
+            final_returns.append(first_step_outputs["global_diagnostics"])
+        
+        if len(final_returns) == 1:
+            return final_returns[0]
         else:
-            return idx
+            return tuple(final_returns)

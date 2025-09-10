@@ -33,6 +33,7 @@ import torch.nn as nn
 # -----------------------------------------------------------------------------
 # Muon optimizer implementation
 import torch.distributed as dist
+from utils.spectral_clipping import spectral_hardcap
 
 def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int) -> torch.Tensor:
     """
@@ -174,6 +175,8 @@ muon_lr = 0.02 # learning rate for Muon
 muon_momentum = 0.95 # momentum for Muon
 muon_nesterov = True # whether to use nesterov momentum in Muon
 muon_ns_steps = 5 # number of Newton-Schulz iteration steps
+# spectral clipping
+spectral_clip_beta = 0.0 # beta for spectral clipping, set to > 0 to enable
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
@@ -186,8 +189,8 @@ device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps'
 dtype = 'float16'#'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = True # use PyTorch 2.0 to compile the model to be faster
 # Looping specific configs - already in model.GPTConfig, but listed here for configurator.py
-# loop_groups = None # Will be defaulted below if init_from == 'scratch' and not set
-# loop_counts = None
+loop_groups = [] # Will be defaulted below if init_from == 'scratch' and not set
+loop_counts = []
 enable_auto_exit_eval = False # Whether to run automatic loop exit evaluation
 # backprop depth for loops (only last-k loops carry gradients)
 loops_backprop_depth = 8  # default k=8; set to <=0 or None to disable truncated backprop on loops
@@ -195,7 +198,7 @@ loops_backprop_depth = 8  # default k=8; set to <=0 or None to disable truncated
 loop_sampling_strategy = 'log_poisson'  # Options: 'uniform', 'log_poisson'
 loop_sampling_rbar = 32  # Targeted mean loops for the Poisson component (before the +1 shift). If None, a heuristic value will be used.
 # -----------------------------------------------------------------------------
-config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str, type(None)))] # Added type(None) to catch loop_groups/counts if they are initially None
+config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str, list, type(None)))] # Added list and type(None)
 exec(open('configurator.py').read()) # overrides from command line or config file
 
 # Set output directory based on model type
@@ -316,7 +319,7 @@ if init_from == 'scratch':
         print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
     model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
     # Set default loop_groups if not provided and initializing from scratch
-    if model_args.get('loop_groups') is None and not use_baseline_model:    
+    if not model_args.get('loop_groups') and not use_baseline_model:    
         if n_layer % 2 == 1: # Odd number of layers
             default_group = [[n_layer // 2]]
         else: # Even number of layers
@@ -776,6 +779,14 @@ while True:
     else:
         scaler.step(optimizer)
     scaler.update()
+
+    # spectral clipping
+    if not use_baseline_model and spectral_clip_beta > 0.0:
+        with torch.no_grad():
+            for n, p in raw_model.named_parameters():
+                if p.dim() >= 2 and 'wte' not in n and 'wpe' not in n and 'lm_head' not in n:
+                    p.data = spectral_hardcap(p.data, beta=spectral_clip_beta, ns_steps=muon_ns_steps)
+
     # flush the gradients as soon as we can, no need for this memory anymore
     if use_muon and isinstance(optimizer, list):
         optimizer[0].zero_grad(set_to_none=True)
@@ -795,6 +806,23 @@ while True:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+    
+    # periodic checkpoint saving
+    if master_process and iter_num > 0 and iter_num % 5000 == 0:
+        checkpoint = {
+            'model': raw_model.state_dict(),
+            'optimizer': optimizer.state_dict() if not use_muon or not isinstance(optimizer, list) else None,
+            'optimizers': [opt.state_dict() for opt in optimizer] if use_muon and isinstance(optimizer, list) else None,
+            'model_args': model_args,
+            'iter_num': iter_num,
+            'best_val_loss': best_val_loss,
+            'config': config,
+        }
+        model_type = "baseline" if use_baseline_model else "looped"
+        checkpoint_path = os.path.join(out_dir, f'ckpt_{iter_num//1000}.pt')
+        print(f"saving {model_type} model periodic checkpoint to {checkpoint_path}")
+        torch.save(checkpoint, checkpoint_path)
+        
     iter_num += 1
     local_iter_num += 1
 
