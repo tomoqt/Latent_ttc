@@ -10,6 +10,35 @@ import torch.nn.functional as F
 
 from model import GPT, GPTConfig
 import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Match plotting style with analyze_loop_representations.py
+try:
+    plt.rcParams.update({
+        "text.usetex": False,
+        "font.family": "serif",
+        "font.size": 18,
+        "figure.titlesize": 20,
+        "axes.titlesize": 20,
+        "axes.labelsize": 20,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "legend.fontsize": 16,
+    })
+except Exception:
+    plt.rcParams.update({
+        "text.usetex": False,
+        "font.family": "serif",
+        "font.size": 18,
+        "figure.titlesize": 20,
+        "axes.titlesize": 20,
+        "axes.labelsize": 20,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "legend.fontsize": 16,
+    })
+
+sns.set_context("talk", font_scale=1.1)
 
 
 def load_val_data(data_dir: str, block_size: int, num_tokens: int) -> torch.Tensor:
@@ -253,34 +282,34 @@ def main():
             times = [r['avg_time_ms'] for _, r in mode_results]
 
             # CE plot
-            plt.figure(figsize=(7,4))
+            plt.figure(figsize=(12, 8))
             plt.plot(thrs, ces, marker='o')
             plt.xscale('log')
-            plt.xlabel('Threshold (log scale)')
-            plt.ylabel('Avg CE')
-            plt.title(f'CE vs Threshold - {mode}')
+            plt.xlabel('Threshold (log scale)', fontsize=20)
+            plt.ylabel('Avg CE', fontsize=20)
+            plt.title(f'CE vs Threshold - {mode}', fontsize=28)
             plt.grid(True, which='both')
             ce_path = os.path.join(args.plot_out_dir, f'ce_vs_threshold_{mode}.png')
             plt.tight_layout(); plt.savefig(ce_path, dpi=200); plt.close()
 
             # PPL plot
-            plt.figure(figsize=(7,4))
+            plt.figure(figsize=(12, 8))
             plt.plot(thrs, ppls, marker='o')
             plt.xscale('log')
-            plt.xlabel('Threshold (log scale)')
-            plt.ylabel('Perplexity')
-            plt.title(f'PPL vs Threshold - {mode}')
+            plt.xlabel('Threshold (log scale)', fontsize=20)
+            plt.ylabel('Perplexity', fontsize=20)
+            plt.title(f'PPL vs Threshold - {mode}', fontsize=28)
             plt.grid(True, which='both')
             ppl_path = os.path.join(args.plot_out_dir, f'ppl_vs_threshold_{mode}.png')
             plt.tight_layout(); plt.savefig(ppl_path, dpi=200); plt.close()
 
             # Time plot
-            plt.figure(figsize=(7,4))
+            plt.figure(figsize=(12, 8))
             plt.plot(thrs, times, marker='o')
             plt.xscale('log')
-            plt.xlabel('Threshold (log scale)')
-            plt.ylabel('Avg ms per token')
-            plt.title(f'Time vs Threshold - {mode}')
+            plt.xlabel('Threshold (log scale)', fontsize=20)
+            plt.ylabel('Avg ms per token', fontsize=20)
+            plt.title(f'Time vs Threshold - {mode}', fontsize=28)
             plt.grid(True, which='both')
             time_path = os.path.join(args.plot_out_dir, f'time_vs_threshold_{mode}.png')
             plt.tight_layout(); plt.savefig(time_path, dpi=200); plt.close()
@@ -301,44 +330,44 @@ def main():
             thrs = list(thrs_tuple)
 
             # CE comparison
-            plt.figure(figsize=(7,4))
+            plt.figure(figsize=(12, 8))
             for mode, mode_results in entries:
                 ces = [r['avg_ce'] for _, r in mode_results]
                 plt.plot(thrs, ces, marker='o', label=mode)
             plt.xscale('log')
-            plt.xlabel('Threshold (log scale)')
-            plt.ylabel('Avg CE')
-            plt.title('CE vs Threshold - Comparison')
+            plt.xlabel('Threshold (log scale)', fontsize=20)
+            plt.ylabel('Avg CE', fontsize=20)
+            plt.title('CE vs Threshold - Comparison', fontsize=28)
             plt.grid(True, which='both')
-            plt.legend()
+            plt.legend(fontsize=18)
             cmp_ce_path = os.path.join(args.plot_out_dir, f'ce_vs_threshold_comparison.png')
             plt.tight_layout(); plt.savefig(cmp_ce_path, dpi=200); plt.close()
 
             # PPL comparison
-            plt.figure(figsize=(7,4))
+            plt.figure(figsize=(12, 8))
             for mode, mode_results in entries:
                 ppls = [r['ppl'] for _, r in mode_results]
                 plt.plot(thrs, ppls, marker='o', label=mode)
             plt.xscale('log')
-            plt.xlabel('Threshold (log scale)')
-            plt.ylabel('Perplexity')
-            plt.title('PPL vs Threshold - Comparison')
+            plt.xlabel('Threshold (log scale)', fontsize=20)
+            plt.ylabel('Perplexity', fontsize=20)
+            plt.title('PPL vs Threshold - Comparison', fontsize=28)
             plt.grid(True, which='both')
-            plt.legend()
+            plt.legend(fontsize=18)
             cmp_ppl_path = os.path.join(args.plot_out_dir, f'ppl_vs_threshold_comparison.png')
             plt.tight_layout(); plt.savefig(cmp_ppl_path, dpi=200); plt.close()
 
             # Time comparison
-            plt.figure(figsize=(7,4))
+            plt.figure(figsize=(12, 8))
             for mode, mode_results in entries:
                 times = [r['avg_time_ms'] for _, r in mode_results]
                 plt.plot(thrs, times, marker='o', label=mode)
             plt.xscale('log')
-            plt.xlabel('Threshold (log scale)')
-            plt.ylabel('Avg ms per token')
-            plt.title('Time vs Threshold - Comparison')
+            plt.xlabel('Threshold (log scale)', fontsize=20)
+            plt.ylabel('Avg ms per token', fontsize=20)
+            plt.title('Time vs Threshold - Comparison', fontsize=28)
             plt.grid(True, which='both')
-            plt.legend()
+            plt.legend(fontsize=18)
             cmp_time_path = os.path.join(args.plot_out_dir, f'time_vs_threshold_comparison.png')
             plt.tight_layout(); plt.savefig(cmp_time_path, dpi=200); plt.close()
 

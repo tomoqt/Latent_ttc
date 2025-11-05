@@ -30,25 +30,29 @@ try:
     plt.rcParams.update({
         "text.usetex": False,
         "font.family": "serif",
-        "axes.titlesize": 24,
-        "axes.labelsize": 24,
-        "xtick.labelsize": 24,
-        "ytick.labelsize": 20,
-        "legend.fontsize": 24,
+        "font.size": 20,
+        "figure.titlesize": 30,
+        "axes.titlesize": 30,
+        "axes.labelsize": 30,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "legend.fontsize": 16,
     })
 except Exception:
     # Fallback if LaTeX is not available in the environment
     plt.rcParams.update({
         "text.usetex": False,
         "font.family": "serif",
-        "axes.titlesize": 24,
-        "axes.labelsize": 24,
-        "xtick.labelsize": 24,
-        "ytick.labelsize": 20,
-        "legend.fontsize": 24,
+        "font.size": 20,
+        "figure.titlesize": 30,
+        "axes.titlesize": 30,
+        "axes.labelsize": 30,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "legend.fontsize": 16,
     })
 
-sns.set_context("talk")
+sns.set_context("talk", font_scale=1.1)
 
 def box_counting_dimension(points):
     """
@@ -254,7 +258,7 @@ def plot_pca_trajectories_2d(pca_transformed_reps_list, prompt_tokens_str, outpu
 
     title_info = f'Combined 2D PCA Trajectories ({num_loops} Data Loops)'
     config_info = f'Model: {total_model_loops} Loops, Groups: {num_loop_groups}, Structure: {loop_group_str}'
-    plt.title(f'{title_info}\n{config_info}', fontsize=10)
+    plt.title(f'{title_info}\n{config_info}')
     plt.xlabel('Principal Component 1')
     plt.ylabel('Principal Component 2')
     
@@ -262,7 +266,7 @@ def plot_pca_trajectories_2d(pca_transformed_reps_list, prompt_tokens_str, outpu
     unique_labels = {}
     for handle, label in zip(handles, labels):
         if label not in unique_labels : unique_labels[label] = handle
-    ax.legend(unique_labels.values(), unique_labels.keys(), loc='center left', bbox_to_anchor=(1, 0.5), fontsize='small')
+    ax.legend(unique_labels.values(), unique_labels.keys(), loc='center left', bbox_to_anchor=(1, 0.5))
     
     plt.grid(True, linestyle='--', alpha=0.7)
     plt.axhline(0, color='black', linewidth=0.5, alpha=0.5)
@@ -316,7 +320,7 @@ def plot_pca_trajectories_3d(pca_transformed_reps_list, prompt_tokens_str, outpu
 
     title_info = f'Combined 3D PCA Trajectories ({num_loops} Data Loops)'
     config_info = f'Model: {total_model_loops} Loops, Groups: {num_loop_groups}, Structure: {loop_group_str}'
-    ax.set_title(f'{title_info}\n{config_info}', fontsize=10)
+    ax.set_title(f'{title_info}\n{config_info}')
     ax.set_xlabel('Principal Component 1')
     ax.set_ylabel('Principal Component 2')
     ax.set_zlabel('Principal Component 3')
@@ -325,7 +329,7 @@ def plot_pca_trajectories_3d(pca_transformed_reps_list, prompt_tokens_str, outpu
     unique_labels = {}
     for handle, label in zip(handles, labels):
         if label not in unique_labels : unique_labels[label] = handle
-    ax.legend(unique_labels.values(), unique_labels.keys(), loc='center left', bbox_to_anchor=(1.1, 0.5), fontsize='small')
+    ax.legend(unique_labels.values(), unique_labels.keys(), loc='center left', bbox_to_anchor=(1.1, 0.5))
 
     sm = plt.cm.ScalarMappable(cmap=depth_cmap)
     sm.set_array([])
@@ -437,9 +441,9 @@ def plot_single_token_pca_trajectory(pca_transformed_reps_list, token_idx_to_plo
     for i, loop_idx_val in enumerate(loop_indices_for_plot):
         point = pc_data_to_plot[i, :]
         if is_3d_plot:
-            ax.text(point[0], point[1], point[2], f"{loop_idx_val}", size=7, zorder=4, color='k')
+            ax.text(point[0], point[1], point[2], f"{loop_idx_val}", size=12, zorder=4, color='k')
         else:
-            ax.annotate(f"{loop_idx_val}", (point[0], point[1]), textcoords="offset points", xytext=(5,5), ha='center', fontsize=8, zorder=4)
+            ax.annotate(f"{loop_idx_val}", (point[0], point[1]), textcoords="offset points", xytext=(5,5), ha='center', fontsize=12, zorder=4)
     
     # Start and End markers, colored by their group's palette and progression
     if pc_data_to_plot.shape[0] > 0:
@@ -485,7 +489,7 @@ def plot_single_token_pca_trajectory(pca_transformed_reps_list, token_idx_to_plo
     dim_str = "3D" if is_3d_plot else "2D"
     base_title = f'{dim_str} PCA Trajectory for Token: "{token_str_label}" (pos {token_idx_to_plot}) {plot_title_suffix}'
     config_info = f'Model: {total_model_loops} Loops, Groups: {num_loop_groups}, Structure: {loop_group_str}'
-    ax.set_title(f'{base_title}\n{config_info}', fontsize=10)
+    ax.set_title(f'{base_title}\n{config_info}')
     ax.set_xlabel('Principal Component 1')
     ax.set_ylabel('Principal Component 2')
     if is_3d_plot:
@@ -495,7 +499,7 @@ def plot_single_token_pca_trajectory(pca_transformed_reps_list, token_idx_to_plo
     handles, labels = ax.get_legend_handles_labels()
     # Create a dictionary to keep the first occurrence of each label to ensure uniqueness
     by_label = dict(zip(labels, handles))
-    ax.legend(by_label.values(), by_label.keys(), fontsize='small', loc='best')
+    ax.legend(by_label.values(), by_label.keys(), loc='best')
 
     ax.grid(True, linestyle='--', alpha=0.7)
     if not is_3d_plot:
@@ -539,7 +543,7 @@ def plot_convergence_diagnostics(diagnostics_data, output_dir, model_config):
         iterations = np.arange(num_iterations)
         
         fig, axs = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle(f'Convergence Diagnostics for {group_key.replace("_", " ")}', fontsize=16)
+        fig.suptitle(f'Convergence Diagnostics for {group_key.replace("_", " ")}')
 
         # Plot Δ-norm
         axs[0, 0].plot(iterations, metrics['delta_norm'], marker='o', linestyle='-')
@@ -596,7 +600,7 @@ def plot_aggregated_convergence_diagnostics(aggregated_diagnostics_data, output_
             continue
 
         fig, axs = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle(f'Aggregated Convergence Diagnostics for {model_name} - {group_key.replace("_", " ")}\n(Mean & Std Dev over prompts)', fontsize=16)
+        fig.suptitle(f'Aggregated Convergence Diagnostics for {model_name} - {group_key.replace("_", " ")}\n(Mean & Std Dev over prompts)')
 
         metric_info = {
             'delta_norm': {'title': 'Change in Representation Norm (Δ-norm)', 'ylabel': r'$\|x_{k+1} - x_k\|_2$'},
@@ -615,15 +619,25 @@ def plot_aggregated_convergence_diagnostics(aggregated_diagnostics_data, output_
                 continue
 
             metric_agg = metrics[metric_key]
-            mean_series = np.array(metric_agg.get('mean'))
-            std_series = np.array(metric_agg.get('std'))
+            mean_raw = metric_agg.get('mean')
+            std_raw = metric_agg.get('std')
+            try:
+                mean_series = np.array([np.nan if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v) for v in mean_raw], dtype=float)
+            except Exception:
+                mean_series = np.array([], dtype=float)
+            std_series = None
+            if std_raw is not None:
+                try:
+                    std_series = np.array([0.0 if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v) for v in std_raw], dtype=float)
+                except Exception:
+                    std_series = None
 
             ref_metric_len = len(metrics.get('delta_norm', {}).get('mean', []))
             start_iter = 1 if metric_key in ['delta_angle', 'logit_drift'] and ref_metric_len > len(mean_series) else 0
             iterations = np.arange(start_iter, start_iter + len(mean_series))
 
             line, = ax.plot(iterations, mean_series, marker='o', linestyle='-', markersize=4, label="Mean")
-            if std_series is not None:
+            if std_series is not None and len(std_series) == len(mean_series):
                 ax.fill_between(iterations, mean_series - std_series, mean_series + std_series, color=line.get_color(), alpha=0.2, label="Std Dev")
 
             ax.set_xlabel('Loop Iteration')
@@ -718,7 +732,7 @@ def plot_global_diagnostics(diagnostics_data, output_dir):
     steps = np.arange(num_steps)
 
     fig, axs = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle('Global Diagnostics Across Forward Pass', fontsize=16)
+    fig.suptitle('Global Diagnostics Across Forward Pass')
 
     # Plot Δ-norm
     axs[0, 0].plot(steps, diagnostics_data['delta_norm'], marker='o', linestyle='-', markersize=3)
@@ -824,7 +838,7 @@ def plot_max_singular_values(model, output_dir):
 
     plt.figure(figsize=(15, 12))
     plt.bar(range(len(sorted_values)), sorted_values)
-    plt.xticks(range(len(sorted_names)), sorted_names, rotation=90, fontsize='small')
+    plt.xticks(range(len(sorted_names)), sorted_names, rotation=90)
     plt.ylabel('Maximum Singular Value')
     plt.title('Maximum Singular Values of Model Weight Matrices')
     plt.grid(axis='y', linestyle='--', alpha=0.7)
@@ -885,9 +899,9 @@ def plot_comparison_hausdorff(all_models_results, output_dir):
         color = cmap(0.0 if k is None or k_max == k_min else (k - k_min) / (k_max - k_min))
         ax.bar(bar_positions, means, bar_width, yerr=stds, color=color, capsize=4)
 
-    ax.set_xlabel('Token Position')
-    ax.set_ylabel('Estimated Hausdorff Dimension (mean over prompts)')
-    ax.set_title('Comparison of Trajectory Hausdorff Dimensions Across Models')
+    ax.set_xlabel('Token Position', fontsize=28)
+    ax.set_ylabel('Estimated Hausdorff Dimension (mean over prompts)', fontsize=28)
+    ax.set_title('Comparison of Trajectory Hausdorff Dimensions Across Models', fontsize=32)
     ax.set_xticks(index)
     
     xtick_labels = [f"Pos {p.split('_')[1]}" for p in sorted_token_pos]
@@ -897,7 +911,7 @@ def plot_comparison_hausdorff(all_models_results, output_dir):
     sm = plt.cm.ScalarMappable(cmap=cmap)
     sm.set_array([])
     cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label('Iterations (k)')
+    cbar.set_label('Iterations (k)', fontsize=28)
     plt.grid(True, axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
 
@@ -955,15 +969,15 @@ def plot_comparison_singular_values(all_models_results, output_dir):
         color = cmap(0.0 if k is None or k_max == k_min else (k - k_min) / (k_max - k_min))
         ax.bar(bar_positions, values, bar_width, color=color)
 
-    ax.set_xlabel('Model Parameter')
-    ax.set_ylabel('Maximum Singular Value')
-    ax.set_title('Comparison of Max Singular Values Across Models')
+    ax.set_xlabel('Model Parameter', fontsize=28)
+    ax.set_ylabel('Maximum Singular Value', fontsize=28)
+    ax.set_title('Comparison of Max Singular Values Across Models', fontsize=32)
     ax.set_xticks(index)
-    ax.set_xticklabels(sorted_param_names, rotation=90, fontsize='small')
+    ax.set_xticklabels(sorted_param_names, rotation=90)
     sm = plt.cm.ScalarMappable(cmap=cmap)
     sm.set_array([])
     cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label('Iterations (k)')
+    cbar.set_label('Iterations (k)', fontsize=28)
     plt.grid(True, axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
 
@@ -1025,30 +1039,56 @@ def plot_comparison_convergence_diagnostics(all_models_results, output_dir):
         for metric in metric_keys:
             plt.figure(figsize=(12, 8))
             ax = plt.gca()
-            model_colors = plt.cm.get_cmap('tab10', len(models_with_data))
+            # Color by checkpoint k with a gradient
+            def _extract_ckpt_k(name):
+                import re
+                m = re.search(r'(\d+)(?!.*\d)', name)
+                return int(m.group(1)) if m else None
+            model_names = list(models_with_data.keys())
+            model_k = [(mn, _extract_ckpt_k(mn)) for mn in model_names]
+            k_by_model = dict(model_k)
+            ks = [k for _, k in model_k if k is not None]
+            k_min, k_max = (min(ks), max(ks)) if ks else (0, 1)
+            cmap = plt.cm.viridis
+            norm = plt.Normalize(vmin=k_min, vmax=k_max)
 
             for i, (model_name, results) in enumerate(models_with_data.items()):
                 diag_data = results['convergence_diagnostics'].get(group_key)
                 if diag_data and metric in diag_data and diag_data[metric]:
                     metric_agg = diag_data[metric]
-                    mean_series = metric_agg.get('mean')
-                    std_series = metric_agg.get('std')
-
-                    if mean_series is not None and len(mean_series) > 0:
+                    mean_raw = metric_agg.get('mean')
+                    std_raw = metric_agg.get('std')
+                    if mean_raw is not None and len(mean_raw) > 0:
+                        try:
+                            mean_arr = np.array([np.nan if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v) for v in mean_raw], dtype=float)
+                        except Exception:
+                            mean_arr = np.array([], dtype=float)
+                        std_arr = None
+                        if std_raw is not None:
+                            try:
+                                std_arr = np.array([0.0 if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v) for v in std_raw], dtype=float)
+                            except Exception:
+                                std_arr = None
                         # Handle metrics that skip the first value (like delta_angle)
-                        start_iter = 1 if metric in ['delta_angle', 'logit_drift'] and len(results['convergence_diagnostics'][group_key]['delta_norm']['mean']) > len(mean_series) else 0
-                        iterations = np.arange(start_iter, start_iter + len(mean_series))
-                        
-                        line, = ax.plot(iterations, mean_series, marker='o', linestyle='-', markersize=4, label=model_name, color=model_colors(i))
-                        if std_series is not None:
-                            ax.fill_between(iterations, mean_series - std_series, mean_series + std_series, color=line.get_color(), alpha=0.2)
+                        start_iter = 1 if metric in ['delta_angle', 'logit_drift'] and len(results['convergence_diagnostics'][group_key]['delta_norm']['mean']) > len(mean_arr) else 0
+                        iterations = np.arange(start_iter, start_iter + len(mean_arr))
 
-            ax.set_title(f'Comparison: {metric.replace("_", " ").title()} for {group_key.replace("_", " ")}')
-            ax.set_xlabel('Loop Iteration')
-            ax.set_ylabel(metric_ylabels.get(metric, 'Value'))
+                        k = k_by_model.get(model_name)
+                        color = cmap(norm(k if (k is not None) else k_min))
+                        line, = ax.plot(iterations, mean_arr, marker='o', linestyle='-', markersize=4, color=color)
+                        if std_arr is not None and len(std_arr) == len(mean_arr):
+                            ax.fill_between(iterations, mean_arr - std_arr, mean_arr + std_arr, color=color, alpha=0.2)
+
+            ax.set_title(f'Comparison: {metric.replace("_", " ").title()} for {group_key.replace("_", " ")}', fontsize=32)
+            ax.set_xlabel('Loop Iteration', fontsize=28)
+            ax.set_ylabel(metric_ylabels.get(metric, 'Value'), fontsize=28)
             ax.grid(True, which="both" if metric == 'logit_drift' else "major")
             if metric == 'logit_drift': ax.set_yscale('log')
-            ax.legend(title="Models")
+            # Add colorbar for iteration k
+            sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+            sm.set_array([])
+            cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+            cbar.set_label('Iterations k (thousands)', fontsize=28)
             plt.tight_layout()
             
             plot_filename = f"comparison_convergence_{group_key}_{metric}.png"
@@ -1076,7 +1116,19 @@ def plot_comparison_jacobian_eigenvalues(all_models_results, output_dir):
         unit_circle = mpatches.Circle((0, 0), 1, color='black', fill=False, linestyle='--', alpha=0.5, label='Unit Circle')
         ax.add_patch(unit_circle)
         
-        model_colors = plt.cm.get_cmap('tab10', len(models_with_data))
+        # Color by checkpoint k with a gradient
+        def _extract_ckpt_k(name):
+            import re
+            m = re.search(r'(\d+)(?!.*\d)', name)
+            return int(m.group(1)) if m else None
+        model_names = list(models_with_data.keys())
+        model_k = [(mn, _extract_ckpt_k(mn)) for mn in model_names]
+        k_by_model = dict(model_k)
+        ks = [k for _, k in model_k if k is not None]
+        k_min, k_max = (min(ks), max(ks)) if ks else (0, 1)
+        cmap = plt.cm.viridis
+        norm = plt.Normalize(vmin=k_min, vmax=k_max)
+
         max_abs_val = 1.0
 
         for i, (model_name, results) in enumerate(models_with_data.items()):
@@ -1085,17 +1137,23 @@ def plot_comparison_jacobian_eigenvalues(all_models_results, output_dir):
                 all_eigvals = np.concatenate(token_eigvals_list)
                 if all_eigvals.size > 0:
                     max_abs_val = max(max_abs_val, np.max(np.abs(all_eigvals)))
-                    ax.scatter(all_eigvals.real, all_eigvals.imag, s=15, alpha=0.5, label=model_name, color=model_colors(i))
+                    k = k_by_model.get(model_name)
+                    color = cmap(norm(k if (k is not None) else k_min))
+                    ax.scatter(all_eigvals.real, all_eigvals.imag, s=15, alpha=0.5, color=color)
         
         lim = max_abs_val * 1.1
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
-        ax.set_xlabel('Real Part')
-        ax.set_ylabel('Imaginary Part')
-        ax.set_title(f'Comparison: Jacobian Eigenvalue Spectrum for {group_key.replace("_", " ")}')
+        ax.set_xlabel('Real Part', fontsize=28)
+        ax.set_ylabel('Imaginary Part', fontsize=28)
+        ax.set_title(f'Comparison: Jacobian Eigenvalue Spectrum for {group_key.replace("_", " ")}', fontsize=32)
         ax.grid(True)
         ax.axhline(0, color='grey', lw=0.5); ax.axvline(0, color='grey', lw=0.5)
-        ax.legend(title="Models")
+        # Add colorbar for iteration k
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label('Iterations k (thousands)', fontsize=28)
         plt.tight_layout()
 
         plot_filename = f"comparison_jacobian_eigvals_{group_key}.png"
@@ -1119,7 +1177,17 @@ def plot_comparison_jacobian_eigenvalue_trajectory(all_models_results, output_di
     paths = {}
     for group_key in all_group_keys:
         fig, ax = plt.subplots(figsize=(12, 8))
-        model_colors = plt.cm.get_cmap('tab10', len(models_with_data))
+        # Color by checkpoint k with a gradient
+        def _extract_ckpt_k(name):
+            import re
+            m = re.search(r'(\d+)(?!.*\d)', name)
+            return int(m.group(1)) if m else None
+        model_names = list(models_with_data.keys())
+        model_k = [(mn, _extract_ckpt_k(mn)) for mn in model_names]
+        k_by_model = dict(model_k)
+        ks = [k for _, k in model_k if k is not None]
+        k_min, k_max = (min(ks), max(ks)) if ks else (0, 1)
+        cmap = plt.cm.viridis
 
         for i, (model_name, results) in enumerate(models_with_data.items()):
             traj_data = results['jacobian_eigval_trajectory'].get(group_key)
@@ -1128,16 +1196,22 @@ def plot_comparison_jacobian_eigenvalue_trajectory(all_models_results, output_di
                 std_trajectory = traj_data.get('std')
                 if mean_trajectory is not None and len(mean_trajectory) > 0:
                     iterations = np.arange(len(mean_trajectory))
-                    line, = ax.plot(iterations, mean_trajectory, marker='.', linestyle='-', label=model_name, color=model_colors(i))
+                    k = k_by_model.get(model_name)
+                    color = cmap(norm(k if (k is not None) else k_min))
+                    line, = ax.plot(iterations, mean_trajectory, marker='.', linestyle='-', color=color)
                     if std_trajectory is not None:
-                        ax.fill_between(iterations, mean_trajectory - std_trajectory, mean_trajectory + std_trajectory, color=line.get_color(), alpha=0.2)
+                        ax.fill_between(iterations, mean_trajectory - std_trajectory, mean_trajectory + std_trajectory, color=color, alpha=0.2)
         
         ax.axhline(1.0, color='r', linestyle='--', label='Stability Boundary (|λ|=1)')
-        ax.set_xlabel('Loop Iteration')
-        ax.set_ylabel('Mean Max Eigenvalue Magnitude |λ|')
-        ax.set_title(f'Comparison: Mean Jacobian Max Eigenvalue Trajectory for {group_key.replace("_", " ")}')
+        ax.set_xlabel('Loop Iteration', fontsize=28)
+        ax.set_ylabel('Mean Max Eigenvalue Magnitude |λ|', fontsize=28)
+        ax.set_title(f'Comparison: Mean Jacobian Max Eigenvalue Trajectory for {group_key.replace("_", " ")}', fontsize=32)
         ax.grid(True)
-        ax.legend(title="Models")
+        # Add colorbar for iteration k
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label('Iterations k (thousands)', fontsize=28)
         plt.tight_layout()
 
         plot_filename = f"comparison_jacobian_eigval_trajectory_{group_key}.png"
@@ -1165,27 +1239,54 @@ def plot_comparison_global_diagnostics(all_models_results, output_dir):
     for metric in metric_keys:
         plt.figure(figsize=(12, 8))
         ax = plt.gca()
-        model_colors = plt.cm.get_cmap('tab10', len(models_with_data))
+        # Color by checkpoint k with a gradient
+        def _extract_ckpt_k(name):
+            import re
+            m = re.search(r'(\d+)(?!.*\d)', name)
+            return int(m.group(1)) if m else None
+        model_names = list(models_with_data.keys())
+        model_k = [(mn, _extract_ckpt_k(mn)) for mn in model_names]
+        k_by_model = dict(model_k)
+        ks = [k for _, k in model_k if k is not None]
+        k_min, k_max = (min(ks), max(ks)) if ks else (0, 1)
+        cmap = plt.cm.viridis
+        norm = plt.Normalize(vmin=k_min, vmax=k_max)
 
         for i, (model_name, results) in enumerate(models_with_data.items()):
             diag_data = results['global_diagnostics']
             if metric in diag_data and diag_data[metric]:
                 metric_agg = diag_data[metric]
-                mean_series = metric_agg.get('mean')
-                std_series = metric_agg.get('std')
-                if mean_series is not None and len(mean_series) > 0:
-                    start_iter = 1 if metric in ['delta_angle', 'logit_drift'] and len(results['global_diagnostics']['delta_norm']['mean']) > len(mean_series) else 0
-                    steps = np.arange(start_iter, start_iter + len(mean_series))
-                    line, = ax.plot(steps, mean_series, marker='.', linestyle='-', markersize=4, label=model_name, color=model_colors(i))
-                    if std_series is not None:
-                        ax.fill_between(steps, mean_series - std_series, mean_series + std_series, color=line.get_color(), alpha=0.2)
+                mean_raw = metric_agg.get('mean')
+                std_raw = metric_agg.get('std')
+                if mean_raw is not None and len(mean_raw) > 0:
+                    try:
+                        mean_arr = np.array([np.nan if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v) for v in mean_raw], dtype=float)
+                    except Exception:
+                        mean_arr = np.array([], dtype=float)
+                    std_arr = None
+                    if std_raw is not None:
+                        try:
+                            std_arr = np.array([0.0 if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v) for v in std_raw], dtype=float)
+                        except Exception:
+                            std_arr = None
+                    start_iter = 1 if metric in ['delta_angle', 'logit_drift'] and len(results['global_diagnostics']['delta_norm']['mean']) > len(mean_arr) else 0
+                    steps = np.arange(start_iter, start_iter + len(mean_arr))
+                    k = k_by_model.get(model_name)
+                    color = cmap(norm(k if (k is not None) else k_min))
+                    line, = ax.plot(steps, mean_arr, marker='.', linestyle='-', markersize=4, color=color)
+                    if std_arr is not None and len(std_arr) == len(mean_arr):
+                        ax.fill_between(steps, mean_arr - std_arr, mean_arr + std_arr, color=color, alpha=0.2)
 
-        ax.set_title(f'Comparison: Global {metric.replace("_", " ").title()}')
-        ax.set_xlabel('Global Step (Layer or Loop Iteration)')
-        ax.set_ylabel(metric_ylabels.get(metric, 'Value'))
+        ax.set_title(f'Comparison: Global {metric.replace("_", " ").title()}', fontsize=32)
+        ax.set_xlabel('Global Step (Layer or Loop Iteration)', fontsize=28)
+        ax.set_ylabel(metric_ylabels.get(metric, 'Value'), fontsize=28)
         ax.grid(True, which="both" if metric == 'logit_drift' else "major")
         if metric == 'logit_drift': ax.set_yscale('log')
-        ax.legend(title="Models")
+        # Add colorbar for iteration k
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label('Iterations k (thousands)', fontsize=28)
         plt.tight_layout()
         
         plot_filename = f"comparison_global_{metric}.png"
@@ -1256,10 +1357,21 @@ def plot_loop30_vs_checkpoint(all_models_results, output_dir, include_convergenc
                     x_ks.append(k)
                     y_vals.append(float(val))
                 if x_ks and y_vals:
-                    fname = f"loop30_vs_ckpt_{group_key}_{metric}.png"
-                    title = f"Loop-30 {metric} vs Checkpoint ({group_key})"
-                    ylabel = metric.replace('_', ' ').title()
-                    path = _line_plot_from_k(x_ks, y_vals, title, ylabel, fname)
+                    # Scatter colored by iteration k; no legend, add colorbar
+                    pairs = sorted(zip(x_ks, y_vals), key=lambda p: p[0])
+                    xs = [p[0] for p in pairs]
+                    ys = [p[1] for p in pairs]
+                    plt.figure(figsize=(max(10, len(xs) * 0.9), 6))
+                    ax = plt.gca()
+                    plt.scatter(xs, ys)
+                    plt.plot(xs, ys, alpha=0.4, color='gray')
+                    plt.xlabel('Iterations (k)', fontsize=28)
+                    plt.ylabel(metric.replace('_', ' ').title(), fontsize=28)
+                    plt.title(f"Loop-30 {metric} vs Checkpoint ({group_key})", fontsize=24)
+                    plt.grid(True, linestyle='--', alpha=0.6)
+                    path = os.path.join(output_dir, f"loop30_vs_ckpt_{group_key}_{metric}.png")
+                    plt.tight_layout()
+                    plt.savefig(path, dpi=300)
                     plots[f"loop30_convergence_{group_key}_{metric}"] = path
 
     # Global diagnostics (single series)
@@ -1280,10 +1392,20 @@ def plot_loop30_vs_checkpoint(all_models_results, output_dir, include_convergenc
                 x_ks.append(k)
                 y_vals.append(float(val))
             if x_ks and y_vals:
-                fname = f"loop30_vs_ckpt_global_{metric}.png"
-                title = f"Loop-30 {metric} vs Checkpoint (Global)"
-                ylabel = metric.replace('_', ' ').title()
-                path = _line_plot_from_k(x_ks, y_vals, title, ylabel, fname)
+                pairs = sorted(zip(x_ks, y_vals), key=lambda p: p[0])
+                xs = [p[0] for p in pairs]
+                ys = [p[1] for p in pairs]
+                plt.figure(figsize=(max(10, len(xs) * 0.9), 6))
+                ax = plt.gca()
+                plt.scatter(xs, ys)
+                plt.plot(xs, ys, alpha=0.4, color='gray')
+                plt.xlabel('Iterations (k)', fontsize=28)
+                plt.ylabel(metric.replace('_', ' ').title(), fontsize=28)
+                plt.title(f"Loop-30 {metric} vs Checkpoint (Global)", fontsize=24)
+                plt.grid(True, linestyle='--', alpha=0.6)
+                path = os.path.join(output_dir, f"loop30_vs_ckpt_global_{metric}.png")
+                plt.tight_layout()
+                plt.savefig(path, dpi=300)
                 plots[f"loop30_global_{metric}"] = path
 
     return plots
@@ -1377,6 +1499,124 @@ def _load_tables_from_dir(tables_dir):
         print(f"Warning: failed loading Hausdorff dimensions from {tables_dir}: {e}")
 
     return results
+
+def _load_tables_from_wandb_run(run_path):
+    """
+    Load metrics tables directly from a Weights & Biases run by parsing the last
+    logged wandb.Table objects. This bypasses any inference and reconstructs the
+    results dict in the same schema used by analyze_single_model.
+
+    Expected logged keys (by this script):
+      - "{model_name}/tables/convergence_{group_key}" (wandb.Table)
+      - "{model_name}/tables/global_diagnostics" (wandb.Table)
+
+    Args:
+        run_path (str): Full W&B run path "entity/project/run_id_or_name".
+
+    Returns:
+        dict: { model_name: results_dict }
+    """
+    results_by_model = {}
+    try:
+        import wandb  # type: ignore
+    except Exception as e:
+        print(f"Error: wandb is required to load tables from a W&B run: {e}")
+        return results_by_model
+
+    try:
+        api = wandb.Api()
+        run = api.run(run_path)
+    except Exception as e:
+        print(f"Error: could not access W&B run '{run_path}': {e}")
+        return results_by_model
+
+    # Map table file path -> last logged key for that table
+    table_path_to_key = {}
+    try:
+        # Iterate over history to associate table file paths with their logged keys
+        for row in run.scan_history():
+            for key, val in row.items():
+                if isinstance(val, dict) and val.get('_type') == 'table-file' and 'path' in val:
+                    table_path_to_key[val['path']] = key  # latest occurrence wins
+    except Exception as e:
+        print(f"Warning: failed scanning W&B run history for tables: {e}")
+
+    if not table_path_to_key:
+        print("No wandb.Table objects found in the specified W&B run.")
+        return results_by_model
+
+    def _ensure_model(results_map, model_name):
+        if model_name not in results_map:
+            results_map[model_name] = {}
+        return results_map[model_name]
+
+    def _parse_table_json(local_json_path):
+        try:
+            with open(local_json_path, 'r') as jf:
+                tj = json.load(jf)
+            # wandb table JSONs typically have top-level 'columns' and 'data'
+            columns = tj.get('columns')
+            data = tj.get('data')
+            if not columns or data is None:
+                return None, None
+            return columns, data
+        except Exception as e:
+            print(f"Warning: failed parsing table JSON {local_json_path}: {e}")
+            return None, None
+
+    # Download and parse each table, assembling results
+    for table_path, key in table_path_to_key.items():
+        try:
+            # Key format expected: "{model_name}/tables/{name}"
+            if '/tables/' not in key:
+                continue
+            model_name, table_name = key.split('/tables/', 1)
+            model_name = sanitize_filename_part(model_name)
+            f = run.file(table_path)
+            local_path = f.download(replace=True).name
+            columns, rows = _parse_table_json(local_path)
+            if not columns or rows is None:
+                continue
+
+            # Build results per expected schema
+            model_res = _ensure_model(results_by_model, model_name)
+
+            # Tables are of two types: convergence_{group_key} and global_diagnostics
+            if table_name.startswith('convergence_'):
+                group_key = table_name[len('convergence_'):]
+                metric_keys = columns[1:]
+                series_by_metric = {mk: [] for mk in metric_keys}
+                for r in rows:
+                    # r[0] is loop_iter
+                    for idx, mk in enumerate(metric_keys, start=1):
+                        val = r[idx] if idx < len(r) else None
+                        try:
+                            series_by_metric[mk].append(float(val) if val is not None and val != '' else None)
+                        except Exception:
+                            series_by_metric[mk].append(None)
+                conv = model_res.setdefault('convergence_diagnostics', {})
+                conv[group_key] = {mk: {'mean': series_by_metric[mk]} for mk in metric_keys}
+
+            elif table_name == 'global_diagnostics':
+                metric_keys = columns[1:]
+                g = model_res.setdefault('global_diagnostics', {})
+                for idx, mk in enumerate(metric_keys, start=1):
+                    series = []
+                    for r in rows:
+                        val = r[idx] if idx < len(r) else None
+                        try:
+                            series.append(float(val) if val is not None and val != '' else None)
+                        except Exception:
+                            series.append(None)
+                    g[mk] = {'mean': series}
+
+            # Ignore other tables (e.g., sample images) for this loader
+        except Exception as e:
+            print(f"Warning: failed processing W&B table '{key}' ({table_path}): {e}")
+
+    if not results_by_model:
+        print("No usable tables were found in the W&B run.")
+    return results_by_model
 
 def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_overrides, prompts, tokenizer_encode_fn, tokenizer_decode_fn_for_single_id_to_str, wandb_logging_enabled):
     """
@@ -1816,6 +2056,7 @@ def main():
     parser = argparse.ArgumentParser(description="Analyze and visualize loop representations from a GPT model using PCA.")
     parser.add_argument('--checkpoint_paths', type=str, nargs='+', required=False, help='One or more full paths to model checkpoint (.pt files)')
     parser.add_argument('--tables_dirs', type=str, nargs='+', default=None, help='One or more directories with precomputed tables (CSV) to plot from, bypassing inference.')
+    parser.add_argument('--tables_from_wandb_run', type=str, default=None, help='W&B run path (entity/project/run) to fetch logged tables and plot without inference.')
     parser.add_argument('--model_configs', type=str, nargs='+', default=None, help='A list of JSON strings or file paths to Python config files, one for each checkpoint.')
     parser.add_argument('--prompts_file', type=str, default=None, help='Path to a text file containing prompts, one per line. If not provided, a default prompt is used.')
     parser.add_argument('--prompt', type=str, default="Hello world, this is a test.", help='Input prompt string (used if prompts_file is not provided)')
@@ -1879,9 +2120,12 @@ def main():
                 except json.JSONDecodeError:
                     raise ValueError(f"'{config_input}' is not a valid file path or JSON string.")
             all_config_overrides.append(overrides)
-    else:
-        # If no configs are provided, create a list of empty dicts
+    elif args.checkpoint_paths:
+        # If no configs are provided but checkpoints are, create a list of empty dicts
         all_config_overrides = [{} for _ in args.checkpoint_paths]
+    else:
+        # Neither configs nor checkpoints provided
+        all_config_overrides = []
 
 
     wandb_logging_enabled = args.wandb_project and args.wandb_run_name
@@ -1892,31 +2136,35 @@ def main():
         # id should be unique to the run name to ensure resuming works correctly.
         wandb.init(project=args.wandb_project, name=args.wandb_run_name, id=args.wandb_run_name, resume="allow")
 
-    # --- Tokenizer Loading ---
-    print(f"Loading tokenizer from {args.meta_path}...")
+    # Determine if we should perform inference
+    do_inference = bool(args.checkpoint_paths) and not bool(args.tables_from_wandb_run)
+
+    # --- Tokenizer Loading (only if inference is needed) ---
     tokenizer_encode_fn, tokenizer_decode_fn_for_single_id_to_str = None, None
-    try:
-        with open(args.meta_path, 'rb') as f: meta = pickle.load(f)
-        if 'encode' in meta and callable(meta['encode']) and 'decode' in meta and callable(meta['decode']):
-            print("Using encode/decode methods from meta.pkl (expected for BPE/SentencePiece).")
-            tokenizer_encode_fn = meta['encode']
-            tokenizer_decode_fn_for_single_id_to_str = lambda token_id: meta['decode']([token_id])
-        else:
-            print("Warning: meta.pkl does not provide .encode/.decode methods. Attempting to use 'stoi' and 'itos'.")
-            if 'stoi' not in meta or 'itos' not in meta:
-                print(f"Error: meta.pkl is missing 'stoi'/'itos' and also lacks .encode/.decode methods."); return
-            stoi, itos = meta['stoi'], meta['itos']
-            tokenizer_encode_fn = lambda s: [stoi[c] for c in s if c in stoi]
-            tokenizer_decode_fn_for_single_id_to_str = lambda token_id: itos.get(token_id, '?')
-    except FileNotFoundError: print(f"Error: Tokenizer meta file not found at {args.meta_path}"); return
-    except Exception as e: print(f"Error loading or initializing tokenizer from {args.meta_path}: {e}"); return
-    if not tokenizer_encode_fn or not tokenizer_decode_fn_for_single_id_to_str:
-        print("Tokenizer functions not initialized. Exiting."); return
+    if do_inference:
+        print(f"Loading tokenizer from {args.meta_path}...")
+        try:
+            with open(args.meta_path, 'rb') as f: meta = pickle.load(f)
+            if 'encode' in meta and callable(meta['encode']) and 'decode' in meta and callable(meta['decode']):
+                print("Using encode/decode methods from meta.pkl (expected for BPE/SentencePiece).")
+                tokenizer_encode_fn = meta['encode']
+                tokenizer_decode_fn_for_single_id_to_str = lambda token_id: meta['decode']([token_id])
+            else:
+                print("Warning: meta.pkl does not provide .encode/.decode methods. Attempting to use 'stoi' and 'itos'.")
+                if 'stoi' not in meta or 'itos' not in meta:
+                    print(f"Error: meta.pkl is missing 'stoi'/'itos' and also lacks .encode/.decode methods."); return
+                stoi, itos = meta['stoi'], meta['itos']
+                tokenizer_encode_fn = lambda s: [stoi[c] for c in s if c in stoi]
+                tokenizer_decode_fn_for_single_id_to_str = lambda token_id: itos.get(token_id, '?')
+        except FileNotFoundError: print(f"Error: Tokenizer meta file not found at {args.meta_path}"); return
+        except Exception as e: print(f"Error loading or initializing tokenizer from {args.meta_path}: {e}"); return
+        if not tokenizer_encode_fn or not tokenizer_decode_fn_for_single_id_to_str:
+            print("Tokenizer functions not initialized. Exiting."); return
 
     # --- Model Analysis Loop ---
     all_models_results = {}
 
-    # Case 1: Load from tables, bypassing inference
+    # Case 1: Load from local tables, bypassing inference
     if args.tables_dirs:
         for tdir in args.tables_dirs:
             model_name = sanitize_filename_part(os.path.basename(os.path.normpath(tdir)))
@@ -1929,9 +2177,20 @@ def main():
             if res:
                 all_models_results[model_name] = res
         # If only using tables, skip the rest and go to comparison/plotting
+
+    # Case 1b: Load tables from a W&B run, bypassing inference
+    if args.tables_from_wandb_run:
+        print(f"\n{'='*80}")
+        print(f"Loading results from W&B run: {args.tables_from_wandb_run}")
+        print(f"{'='*80}")
+        wb_models = _load_tables_from_wandb_run(args.tables_from_wandb_run)
+        for model_name, res in wb_models.items():
+            out_dir = os.path.join(args.output_dir, model_name)
+            os.makedirs(out_dir, exist_ok=True)
+            all_models_results[model_name] = res
     
     # Case 2: Run inference if checkpoints provided
-    if args.checkpoint_paths:
+    if do_inference and args.checkpoint_paths:
         for i, checkpoint_path in enumerate(args.checkpoint_paths):
             # Sanitize model name and handle "swapped" case
             base_name = os.path.basename(checkpoint_path).replace('.pt', '')
@@ -1963,6 +2222,17 @@ def main():
             )
             if results:
                 all_models_results[model_name] = results
+
+    # For any models with available aggregated series, generate per-model aggregated plots
+    if all_models_results:
+        for model_name, res in all_models_results.items():
+            aggregated_output_dir = os.path.join(args.output_dir, model_name, "aggregated_plots")
+            os.makedirs(aggregated_output_dir, exist_ok=True)
+            if args.track_convergence_diagnostics and 'convergence_diagnostics' in res:
+                print(f"\nPlotting aggregated convergence diagnostics for {model_name}...")
+                plot_aggregated_convergence_diagnostics(
+                    res['convergence_diagnostics'], aggregated_output_dir, model_name
+                )
 
     # --- Comparison Plotting ---
     if len(all_models_results) > 1:
