@@ -2,7 +2,9 @@ import os
 import time
 import math
 import argparse
-from typing import List, Optional, Dict, Any
+import random
+from collections import defaultdict
+from typing import List, Optional, Dict, Any, Tuple
 
 import numpy as np
 import torch
@@ -39,6 +41,82 @@ except Exception:
     })
 
 sns.set_context("talk", font_scale=1.1)
+
+
+METRIC_KEYS: Tuple[str, ...] = (
+    'avg_ce',
+    'ppl',
+    'avg_time_ms',
+    'avg_iters',
+    'tokens_evaluated',
+    'wall_time_s',
+)
+
+
+def set_global_seed(seed: Optional[int]) -> None:
+    """Set RNG seeds across Python, NumPy, and PyTorch."""
+    if seed is None:
+        return
+    seed_int = int(seed)
+    seed32 = seed_int % (2 ** 32)
+    seed64 = seed_int % (2 ** 63 - 1)
+    random.seed(seed_int)
+    np.random.seed(seed32)
+    torch.manual_seed(seed64)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed64)
+        torch.cuda.manual_seed_all(seed64)
+    if hasattr(torch.backends, 'cudnn'):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def compute_mean_std(results: List[Dict[str, Any]]) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """Compute mean and std for each tracked metric across a list of runs."""
+    means: Dict[str, float] = {}
+    stds: Dict[str, float] = {}
+    for key in METRIC_KEYS:
+        values = np.array([float(res[key]) for res in results], dtype=float)
+        if values.size == 0:
+            means[key] = float('nan')
+            stds[key] = float('nan')
+            continue
+        means[key] = float(values.mean())
+        stds[key] = float(values.std(ddof=0)) if values.size > 1 else 0.0
+    return means, stds
+
+
+def format_with_std(mean: float, std: float, precision: int) -> str:
+    fmt = f"{{:.{precision}f}}"
+    mean_str = fmt.format(mean)
+    if std > 1e-12:
+        std_str = fmt.format(std)
+        return f"{mean_str}±{std_str}"
+    return mean_str
+
+
+def build_metric_summary(means: Dict[str, float], stds: Optional[Dict[str, float]] = None) -> str:
+    stds = stds or {}
+    get_std = lambda key: stds.get(key, 0.0)
+
+    ce = format_with_std(means['avg_ce'], get_std('avg_ce'), 4)
+    ppl = format_with_std(means['ppl'], get_std('ppl'), 2)
+    avg_time = format_with_std(means['avg_time_ms'], get_std('avg_time_ms'), 2)
+    avg_iters = format_with_std(means['avg_iters'], get_std('avg_iters'), 2)
+
+    tokens_mean = means['tokens_evaluated']
+    tokens_std = get_std('tokens_evaluated')
+    if tokens_std > 1e-6:
+        tokens = format_with_std(tokens_mean, tokens_std, 1)
+    else:
+        tokens = str(int(round(tokens_mean)))
+
+    wall = format_with_std(means['wall_time_s'], get_std('wall_time_s'), 2)
+
+    return (
+        f"CE={ce}, PPL={ppl}, avg_time_ms/token={avg_time}, "
+        f"avg_iters={avg_iters}, tokens={tokens}, wall={wall}s"
+    )
 
 
 def load_val_data(data_dir: str, block_size: int, num_tokens: int) -> torch.Tensor:
@@ -92,9 +170,11 @@ def evaluate_autoregressive(
     threshold: Optional[float],
     fixed_loops: Optional[int],
     top_k: Optional[int] = None,
+    random_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     # Configure early-exit
     cfg = model.config
+    set_global_seed(random_seed)
     # Preserve originals
     original_auto = getattr(cfg, 'automatic_loop_exit', False)
     original_mode = getattr(cfg, 'automatic_loop_exit_mode', 'step_norm_diff')
@@ -223,6 +303,7 @@ def main():
     parser.add_argument('--sweep_modes', type=str, nargs='*', default=['step_norm_diff','kl_div_diff','acceleration'], help='Modes to sweep over')
     parser.add_argument('--plot', action='store_true', help='Enable plotting of metrics vs threshold')
     parser.add_argument('--plot_out_dir', type=str, default='eval_plots', help='Directory to save plots if --plot is set')
+    parser.add_argument('--seeds', type=int, nargs='*', default=None, help='List of random seeds to evaluate; if omitted, evaluates once without reseeding.')
     args = parser.parse_args()
 
     # Load data and model
@@ -233,143 +314,171 @@ def main():
 
     # Evaluate modalities
     print("Running autoregressive evaluation...\n")
-
-    # Always evaluate fixed first for a baseline (no threshold)
-    fixed_res = evaluate_autoregressive(
-        model=model,
-        tokens=tokens,
-        device=args.device,
-        max_eval_tokens=args.max_eval_tokens,
-        mode='fixed',
-        threshold=None,
-        fixed_loops=args.fixed_loops,
-        top_k=args.top_k,
-    )
-    print(f"mode=fixed => CE={fixed_res['avg_ce']:.4f}, PPL={fixed_res['ppl']:.2f}, avg_time_ms/token={fixed_res['avg_time_ms']:.2f}, "
-          f"avg_iters={fixed_res['avg_iters']:.2f}, tokens={fixed_res['tokens_evaluated']}, wall={fixed_res['wall_time_s']:.2f}s")
-
-    results_by_mode = {}
-    # Decide thresholds to use: either explicit sweep or single value
     thresholds = args.sweep_thresholds if args.sweep_thresholds else [args.threshold]
-    for mode in args.sweep_modes:
-        mode_results = []
-        for thr in thresholds:
-            res = evaluate_autoregressive(
-                model=model,
-                tokens=tokens,
-                device=args.device,
-                max_eval_tokens=args.max_eval_tokens,
-                mode=mode,
-                threshold=thr,
-                fixed_loops=args.fixed_loops,
-                top_k=args.top_k,
-            )
-            mode_results.append((thr, res))
-            print(f"mode={mode}, thr={thr}, fixed_loops={args.fixed_loops} => "
-                  f"CE={res['avg_ce']:.4f}, PPL={res['ppl']:.2f}, avg_time_ms/token={res['avg_time_ms']:.2f}, "
-                  f"avg_iters={res['avg_iters']:.2f}, tokens={res['tokens_evaluated']}, wall={res['wall_time_s']:.2f}s")
-        results_by_mode[mode] = mode_results
+    seeds = args.seeds if args.seeds else [None]
+
+    all_seed_results: List[Dict[str, Any]] = []
+    for seed in seeds:
+        seed_label = 'default' if seed is None else str(seed)
+        base_seed = None if seed is None else int(seed)
+        seed_multiplier = 1000
+        seed_counter = 0
+
+        print(f"Evaluating seed={seed_label}")
+
+        eval_seed = None if base_seed is None else base_seed * seed_multiplier + seed_counter
+        seed_counter += 1
+        fixed_res = evaluate_autoregressive(
+            model=model,
+            tokens=tokens,
+            device=args.device,
+            max_eval_tokens=args.max_eval_tokens,
+            mode='fixed',
+            threshold=None,
+            fixed_loops=args.fixed_loops,
+            top_k=args.top_k,
+            random_seed=eval_seed,
+        )
+        print(f"seed={seed_label}, mode=fixed => {build_metric_summary(fixed_res)}")
+
+        seed_mode_results: Dict[str, List[Tuple[float, Dict[str, Any]]]] = {}
+        for mode in args.sweep_modes:
+            mode_results: List[Tuple[float, Dict[str, Any]]] = []
+            for thr in thresholds:
+                eval_seed = None if base_seed is None else base_seed * seed_multiplier + seed_counter
+                seed_counter += 1
+                res = evaluate_autoregressive(
+                    model=model,
+                    tokens=tokens,
+                    device=args.device,
+                    max_eval_tokens=args.max_eval_tokens,
+                    mode=mode,
+                    threshold=thr,
+                    fixed_loops=args.fixed_loops,
+                    top_k=args.top_k,
+                    random_seed=eval_seed,
+                )
+                mode_results.append((thr, res))
+                print(
+                    f"seed={seed_label}, mode={mode}, thr={thr}, fixed_loops={args.fixed_loops} => "
+                    f"{build_metric_summary(res)}"
+                )
+            seed_mode_results[mode] = mode_results
+
+        all_seed_results.append({'seed': seed, 'fixed': fixed_res, 'modes': seed_mode_results})
+
+    multi_seed = len(all_seed_results) > 1
+    plot_stats_by_mode: Dict[str, List[Dict[str, Any]]] = {}
+
+    if multi_seed:
+        print("\nAggregated across seeds:")
+        fixed_means, fixed_stds = compute_mean_std([record['fixed'] for record in all_seed_results])
+        print(f"seed=ALL, mode=fixed => {build_metric_summary(fixed_means, fixed_stds)}")
+
+        for mode in args.sweep_modes:
+            thr_groups: Dict[float, List[Dict[str, Any]]] = defaultdict(list)
+            for record in all_seed_results:
+                for thr, res in record['modes'].get(mode, []):
+                    thr_groups[float(thr)].append(res)
+
+            stats_list: List[Dict[str, Any]] = []
+            for thr in sorted(thr_groups.keys()):
+                res_list = thr_groups[thr]
+                means, stds = compute_mean_std(res_list)
+                stats_list.append({'threshold': thr, 'mean': means, 'std': stds})
+                print(
+                    f"seed=ALL, mode={mode}, thr={thr}, fixed_loops={args.fixed_loops} => "
+                    f"{build_metric_summary(means, stds)}"
+                )
+            plot_stats_by_mode[mode] = stats_list
+    else:
+        seed_record = all_seed_results[0]
+        for mode, mode_results in seed_record['modes'].items():
+            stats_list: List[Dict[str, Any]] = []
+            for thr, res in mode_results:
+                means = {key: float(res[key]) for key in METRIC_KEYS}
+                stds = {key: 0.0 for key in METRIC_KEYS}
+                stats_list.append({'threshold': float(thr), 'mean': means, 'std': stds})
+            plot_stats_by_mode[mode] = stats_list
 
     # Plotting
-    if args.plot and results_by_mode:
+    if args.plot and any(plot_stats_by_mode.values()):
         os.makedirs(args.plot_out_dir, exist_ok=True)
-        for mode, mode_results in results_by_mode.items():
-            if not mode_results:
+
+        for mode, stats_list in plot_stats_by_mode.items():
+            if not stats_list:
                 continue
-            thrs = [t for t, _ in mode_results]
-            ces = [r['avg_ce'] for _, r in mode_results]
-            ppls = [r['ppl'] for _, r in mode_results]
-            times = [r['avg_time_ms'] for _, r in mode_results]
 
-            # CE plot
-            plt.figure(figsize=(12, 8))
-            plt.plot(thrs, ces, marker='o')
-            plt.xscale('log')
-            plt.xlabel('Threshold (log scale)', fontsize=20)
-            plt.ylabel('Avg CE', fontsize=20)
-            plt.title(f'CE vs Threshold - {mode}', fontsize=28)
-            plt.grid(True, which='both')
-            ce_path = os.path.join(args.plot_out_dir, f'ce_vs_threshold_{mode}.png')
-            plt.tight_layout(); plt.savefig(ce_path, dpi=200); plt.close()
+            thrs = [entry['threshold'] for entry in stats_list]
+            ces_mean = [entry['mean']['avg_ce'] for entry in stats_list]
+            ces_std = [entry['std']['avg_ce'] for entry in stats_list]
+            ppls_mean = [entry['mean']['ppl'] for entry in stats_list]
+            ppls_std = [entry['std']['ppl'] for entry in stats_list]
+            times_mean = [entry['mean']['avg_time_ms'] for entry in stats_list]
+            times_std = [entry['std']['avg_time_ms'] for entry in stats_list]
 
-            # PPL plot
-            plt.figure(figsize=(12, 8))
-            plt.plot(thrs, ppls, marker='o')
-            plt.xscale('log')
-            plt.xlabel('Threshold (log scale)', fontsize=20)
-            plt.ylabel('Perplexity', fontsize=20)
-            plt.title(f'PPL vs Threshold - {mode}', fontsize=28)
-            plt.grid(True, which='both')
-            ppl_path = os.path.join(args.plot_out_dir, f'ppl_vs_threshold_{mode}.png')
-            plt.tight_layout(); plt.savefig(ppl_path, dpi=200); plt.close()
+            def plot_series(y_vals, y_err, ylabel, title, filename):
+                plt.figure(figsize=(12, 8))
+                if multi_seed and any(err > 1e-12 for err in y_err):
+                    plt.errorbar(thrs, y_vals, yerr=y_err, marker='o', capsize=4)
+                else:
+                    plt.plot(thrs, y_vals, marker='o')
+                plt.xscale('log')
+                plt.xlabel('Threshold (log scale)', fontsize=20)
+                plt.ylabel(ylabel, fontsize=20)
+                plt.title(title, fontsize=28)
+                plt.grid(True, which='both')
+                out_path = os.path.join(args.plot_out_dir, filename)
+                plt.tight_layout(); plt.savefig(out_path, dpi=200); plt.close()
 
-            # Time plot
-            plt.figure(figsize=(12, 8))
-            plt.plot(thrs, times, marker='o')
-            plt.xscale('log')
-            plt.xlabel('Threshold (log scale)', fontsize=20)
-            plt.ylabel('Avg ms per token', fontsize=20)
-            plt.title(f'Time vs Threshold - {mode}', fontsize=28)
-            plt.grid(True, which='both')
-            time_path = os.path.join(args.plot_out_dir, f'time_vs_threshold_{mode}.png')
-            plt.tight_layout(); plt.savefig(time_path, dpi=200); plt.close()
+            plot_series(ces_mean, ces_std, 'Avg CE', f'CE vs Threshold - {mode}', f'ce_vs_threshold_{mode}.png')
+            plot_series(ppls_mean, ppls_std, 'Perplexity', f'PPL vs Threshold - {mode}', f'ppl_vs_threshold_{mode}.png')
+            plot_series(
+                times_mean,
+                times_std,
+                'Avg ms per token',
+                f'Time vs Threshold - {mode}',
+                f'time_vs_threshold_{mode}.png',
+            )
 
-        # Comparison plots across modes for the swept thresholds
-        # Only include modes that share the same exact threshold grid
-        # Build a map from threshold tuple to list of (mode, metrics)
-        grids: Dict[tuple, list] = {}
-        for mode, mode_results in results_by_mode.items():
-            thrs = tuple([float(t) for t, _ in mode_results])
-            if thrs not in grids:
-                grids[thrs] = []
-            grids[thrs].append((mode, mode_results))
+        grids: Dict[tuple, List[Tuple[str, List[Dict[str, Any]]]]] = {}
+        for mode, stats_list in plot_stats_by_mode.items():
+            thrs_tuple = tuple(entry['threshold'] for entry in stats_list)
+            if not thrs_tuple:
+                continue
+            grids.setdefault(thrs_tuple, []).append((mode, stats_list))
 
         for thrs_tuple, entries in grids.items():
             if len(entries) < 2:
                 continue
             thrs = list(thrs_tuple)
 
-            # CE comparison
-            plt.figure(figsize=(12, 8))
-            for mode, mode_results in entries:
-                ces = [r['avg_ce'] for _, r in mode_results]
-                plt.plot(thrs, ces, marker='o', label=mode)
-            plt.xscale('log')
-            plt.xlabel('Threshold (log scale)', fontsize=20)
-            plt.ylabel('Avg CE', fontsize=20)
-            plt.title('CE vs Threshold - Comparison', fontsize=28)
-            plt.grid(True, which='both')
-            plt.legend(fontsize=18)
-            cmp_ce_path = os.path.join(args.plot_out_dir, f'ce_vs_threshold_comparison.png')
-            plt.tight_layout(); plt.savefig(cmp_ce_path, dpi=200); plt.close()
+            def comparison_plot(y_key: str, ylabel: str, title: str, filename: str) -> None:
+                plt.figure(figsize=(12, 8))
+                for mode_name, stats_list in entries:
+                    y_vals = [entry['mean'][y_key] for entry in stats_list]
+                    y_err = [entry['std'][y_key] for entry in stats_list]
+                    if multi_seed and any(err > 1e-12 for err in y_err):
+                        plt.errorbar(thrs, y_vals, yerr=y_err, marker='o', label=mode_name, capsize=4)
+                    else:
+                        plt.plot(thrs, y_vals, marker='o', label=mode_name)
+                plt.xscale('log')
+                plt.xlabel('Threshold (log scale)', fontsize=20)
+                plt.ylabel(ylabel, fontsize=20)
+                plt.title(title, fontsize=28)
+                plt.grid(True, which='both')
+                plt.legend(fontsize=18)
+                out_path = os.path.join(args.plot_out_dir, filename)
+                plt.tight_layout(); plt.savefig(out_path, dpi=200); plt.close()
 
-            # PPL comparison
-            plt.figure(figsize=(12, 8))
-            for mode, mode_results in entries:
-                ppls = [r['ppl'] for _, r in mode_results]
-                plt.plot(thrs, ppls, marker='o', label=mode)
-            plt.xscale('log')
-            plt.xlabel('Threshold (log scale)', fontsize=20)
-            plt.ylabel('Perplexity', fontsize=20)
-            plt.title('PPL vs Threshold - Comparison', fontsize=28)
-            plt.grid(True, which='both')
-            plt.legend(fontsize=18)
-            cmp_ppl_path = os.path.join(args.plot_out_dir, f'ppl_vs_threshold_comparison.png')
-            plt.tight_layout(); plt.savefig(cmp_ppl_path, dpi=200); plt.close()
-
-            # Time comparison
-            plt.figure(figsize=(12, 8))
-            for mode, mode_results in entries:
-                times = [r['avg_time_ms'] for _, r in mode_results]
-                plt.plot(thrs, times, marker='o', label=mode)
-            plt.xscale('log')
-            plt.xlabel('Threshold (log scale)', fontsize=20)
-            plt.ylabel('Avg ms per token', fontsize=20)
-            plt.title('Time vs Threshold - Comparison', fontsize=28)
-            plt.grid(True, which='both')
-            plt.legend(fontsize=18)
-            cmp_time_path = os.path.join(args.plot_out_dir, f'time_vs_threshold_comparison.png')
-            plt.tight_layout(); plt.savefig(cmp_time_path, dpi=200); plt.close()
+            comparison_plot('avg_ce', 'Avg CE', 'CE vs Threshold - Comparison', 'ce_vs_threshold_comparison.png')
+            comparison_plot('ppl', 'Perplexity', 'PPL vs Threshold - Comparison', 'ppl_vs_threshold_comparison.png')
+            comparison_plot(
+                'avg_time_ms',
+                'Avg ms per token',
+                'Time vs Threshold - Comparison',
+                'time_vs_threshold_comparison.png',
+            )
 
 
 if __name__ == '__main__':

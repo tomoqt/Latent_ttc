@@ -6,6 +6,7 @@ on these representations, and visualizes the 2D and 3D trajectories of tokens.
 """
 
 import argparse
+import csv
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -194,6 +195,106 @@ def compute_pca_and_transform(loop_representations_list, n_components=2):
     print(f"Total explained variance by {actual_n_components} components: {np.sum(pca.explained_variance_ratio_):.4f}")
 
     return pca, transformed_reps_list_out
+
+
+def compute_drift_loop_ratios(loop_representations_list, model_config, convergence_diagnostics=None):
+    """
+    Compute the drift-to-loop ratio (DLR) for handoffs between consecutive loop groups.
+    """
+
+    if not loop_representations_list:
+        return {}
+
+    loop_groups = getattr(model_config, 'loop_groups', None)
+    if not loop_groups or len(loop_groups) < 2:
+        return {}
+
+    group_keys = ["group_" + "_".join(str(idx) for idx in group) for group in loop_groups]
+    total_iterations = len(loop_representations_list)
+
+    group_outputs = {}
+    cursor = 0
+
+    for idx, group_key in enumerate(group_keys):
+        iterations_for_group = None
+        if convergence_diagnostics and group_key in convergence_diagnostics:
+            iterations_for_group = len(convergence_diagnostics[group_key].get('delta_norm', []))
+
+        if iterations_for_group is None:
+            loop_counts = getattr(model_config, 'loop_counts', None)
+            if loop_counts and idx < len(loop_counts):
+                count_val = loop_counts[idx]
+                iterations_for_group = count_val if (count_val and count_val > 0) else 1
+            else:
+                iterations_for_group = getattr(model_config, 'max_loops', total_iterations)
+
+        if idx == len(group_keys) - 1:
+            iterations_for_group = total_iterations - cursor
+        else:
+            iterations_for_group = max(0, min(iterations_for_group, total_iterations - cursor))
+
+        if iterations_for_group <= 0:
+            group_outputs[group_key] = []
+            continue
+
+        end = min(cursor + iterations_for_group, total_iterations)
+        group_outputs[group_key] = loop_representations_list[cursor:end]
+        cursor = end
+
+    if cursor < total_iterations:
+        last_key = group_keys[-1]
+        group_outputs.setdefault(last_key, [])
+        group_outputs[last_key].extend(loop_representations_list[cursor:])
+
+    ratios = {}
+    prev_group_last_output = None
+    group_delta_norms = {}
+
+    for group_key in group_keys:
+        outputs = group_outputs.get(group_key, [])
+        deltas = []
+        prev_state = prev_group_last_output
+
+        for output_tensor in outputs:
+            if prev_state is not None:
+                diff = output_tensor - prev_state
+                delta_norm = torch.norm(diff.reshape(-1), p=2).item()
+                deltas.append(delta_norm)
+            prev_state = output_tensor
+
+        group_delta_norms[group_key] = deltas
+        if outputs:
+            prev_group_last_output = outputs[-1]
+
+    for idx in range(len(group_keys) - 1):
+        current_key = group_keys[idx]
+        next_key = group_keys[idx + 1]
+
+        current_outputs = group_outputs.get(current_key) or []
+        next_outputs = group_outputs.get(next_key) or []
+        if not current_outputs or not next_outputs:
+            continue
+
+        delta_norms = group_delta_norms.get(current_key, [])
+        if not delta_norms:
+            continue
+
+        avg_delta_norm = float(np.mean(delta_norms))
+        if avg_delta_norm <= 0.0:
+            continue
+
+        numerator_tensor = next_outputs[0] - current_outputs[-1]
+        numerator_norm = torch.norm(numerator_tensor.reshape(-1), p=2).item()
+        if not np.isfinite(numerator_norm):
+            continue
+
+        ratio = numerator_norm / avg_delta_norm
+        if np.isfinite(ratio):
+            handoff_key = f"dlr_{current_key}_to_{next_key}"
+            ratios[handoff_key] = float(ratio)
+
+    return ratios
+
 
 PALETTES = [plt.cm.viridis, plt.cm.plasma, plt.cm.inferno, plt.cm.magma, 
             plt.cm.cividis, plt.cm.coolwarm, plt.cm.spring, plt.cm.autumn, 
@@ -987,6 +1088,62 @@ def plot_comparison_singular_values(all_models_results, output_dir):
     plt.close()
     print(f"Max singular value comparison plot saved to {plot_filepath}")
     return plot_filepath
+
+
+def plot_comparison_drift_loop_ratio(all_models_results, output_dir):
+    """Plots a comparison of drift-to-loop ratios across multiple models."""
+
+    models_with_data = {
+        name: res for name, res in all_models_results.items()
+        if 'drift_loop_ratio' in res and res['drift_loop_ratio'].get('mean')
+    }
+    if not models_with_data:
+        print("No drift-to-loop ratio data available for comparison.")
+        return None
+
+    all_handoffs = set()
+    for res in models_with_data.values():
+        all_handoffs.update(res['drift_loop_ratio']['mean'].keys())
+
+    if not all_handoffs:
+        print("No drift-to-loop ratio handoffs found across models.")
+        return None
+
+    handoffs = sorted(all_handoffs)
+    num_handoffs = len(handoffs)
+    model_names = list(models_with_data.keys())
+    num_models = len(model_names)
+
+    plt.figure(figsize=(max(15, num_handoffs * 1.2), 8))
+    ax = plt.gca()
+
+    bar_width = 0.8 / max(1, num_models)
+    index = np.arange(num_handoffs)
+    cmap = plt.cm.get_cmap('tab10', num_models)
+
+    for i, model_name in enumerate(model_names):
+        dlr_means = models_with_data[model_name]['drift_loop_ratio']['mean']
+        dlr_stds = models_with_data[model_name]['drift_loop_ratio'].get('std', {})
+        means = [dlr_means.get(h, np.nan) for h in handoffs]
+        stds = [dlr_stds.get(h, 0.0) for h in handoffs]
+        bar_positions = index + i * bar_width - (bar_width * (num_models - 1) / 2)
+        ax.bar(bar_positions, means, bar_width, yerr=stds, capsize=4, color=cmap(i))
+
+    ax.set_xlabel('Loop Group Handoff', fontsize=24)
+    ax.set_ylabel('Drift-to-Loop Ratio (DLR)', fontsize=24)
+    ax.set_title('Comparison of Drift-to-Loop Ratios Across Models', fontsize=28)
+    ax.set_xticks(index)
+    ax.set_xticklabels(handoffs, rotation=45, ha='right')
+    ax.legend(model_names, title='Model', loc='best')
+    ax.grid(True, axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+
+    plot_filename = "comparison_drift_loop_ratio.png"
+    plot_filepath = os.path.join(output_dir, plot_filename)
+    plt.savefig(plot_filepath, dpi=300)
+    plt.close()
+    print(f"Drift-to-loop ratio comparison plot saved to {plot_filepath}")
+    return plot_filepath
 def plot_hausdorff_dimensions_bar(hausdorff_means, hausdorff_stds, output_dir, model_name):
     """
     Create a bar plot of Hausdorff (box-count) dimension means with std error bars per token position.
@@ -1008,6 +1165,32 @@ def plot_hausdorff_dimensions_bar(hausdorff_means, hausdorff_stds, output_dir, m
     plt.grid(axis='y', linestyle='--', alpha=0.6)
     plt.tight_layout()
     path = os.path.join(output_dir, 'hausdorff_dimensions.png')
+    plt.savefig(path, dpi=300)
+    plt.close()
+    return path
+
+
+def plot_drift_loop_ratio_bar(dlr_means, dlr_stds, output_dir, model_name):
+    """Create a bar plot for drift-to-loop ratios per loop-group handoff."""
+
+    if not dlr_means:
+        return None
+
+    os.makedirs(output_dir, exist_ok=True)
+    handoffs = sorted(dlr_means.keys())
+    means = [dlr_means[h] for h in handoffs]
+    stds = [dlr_stds.get(h, 0.0) for h in handoffs] if dlr_stds else [0.0 for _ in handoffs]
+
+    plt.figure(figsize=(max(12, len(handoffs) * 0.6), 6))
+    x = np.arange(len(handoffs))
+    plt.bar(x, means, yerr=stds, capsize=3)
+    plt.xticks(x, handoffs, rotation=45, ha='right')
+    plt.ylabel('Drift-to-Loop Ratio (DLR)')
+    plt.title(f'Drift-to-Loop Ratios per Group Handoff - {model_name}')
+    plt.grid(axis='y', linestyle='--', alpha=0.6)
+    plt.tight_layout()
+
+    path = os.path.join(output_dir, 'drift_loop_ratio.png')
     plt.savefig(path, dpi=300)
     plt.close()
     return path
@@ -1128,6 +1311,7 @@ def plot_comparison_jacobian_eigenvalues(all_models_results, output_dir):
         k_min, k_max = (min(ks), max(ks)) if ks else (0, 1)
         cmap = plt.cm.viridis
         norm = plt.Normalize(vmin=k_min, vmax=k_max)
+        norm = plt.Normalize(vmin=k_min, vmax=k_max)
 
         max_abs_val = 1.0
 
@@ -1188,6 +1372,7 @@ def plot_comparison_jacobian_eigenvalue_trajectory(all_models_results, output_di
         ks = [k for _, k in model_k if k is not None]
         k_min, k_max = (min(ks), max(ks)) if ks else (0, 1)
         cmap = plt.cm.viridis
+        norm = plt.Normalize(vmin=k_min, vmax=k_max)
 
         for i, (model_name, results) in enumerate(models_with_data.items()):
             traj_data = results['jacobian_eigval_trajectory'].get(group_key)
@@ -1482,7 +1667,6 @@ def _load_tables_from_dir(tables_dir):
     try:
         hpath = os.path.join(tables_dir, 'hausdorff_dimensions.csv')
         if os.path.isfile(hpath):
-            import csv
             means, stds = {}, {}
             with open(hpath, 'r') as f:
                 reader = csv.DictReader(f)
@@ -1497,6 +1681,27 @@ def _load_tables_from_dir(tables_dir):
                 results['hausdorff_dimensions'] = {'mean': means, 'std': stds}
     except Exception as e:
         print(f"Warning: failed loading Hausdorff dimensions from {tables_dir}: {e}")
+
+    # Optional Drift-to-loop ratio (if present)
+    try:
+        dlr_path = os.path.join(tables_dir, 'drift_loop_ratio.csv')
+        if os.path.isfile(dlr_path):
+            means, stds = {}, {}
+            with open(dlr_path, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    handoff = row.get('handoff')
+                    mean_val = row.get('mean')
+                    std_val = row.get('std')
+                    if handoff:
+                        if mean_val not in (None, ''):
+                            means[handoff] = float(mean_val)
+                        if std_val not in (None, ''):
+                            stds[handoff] = float(std_val)
+            if means:
+                results['drift_loop_ratio'] = {'mean': means, 'std': stds}
+    except Exception as e:
+        print(f"Warning: failed loading drift-to-loop ratio from {tables_dir}: {e}")
 
     return results
 
@@ -1610,6 +1815,28 @@ def _load_tables_from_wandb_run(run_path):
                             series.append(None)
                     g[mk] = {'mean': series}
 
+            elif table_name == 'drift_loop_ratio':
+                means, stds = {}, {}
+                for row in rows:
+                    if not row:
+                        continue
+                    handoff = row[0] if len(row) > 0 else None
+                    mean_val = row[1] if len(row) > 1 else None
+                    std_val = row[2] if len(row) > 2 else None
+                    if handoff:
+                        if mean_val not in (None, ''):
+                            try:
+                                means[handoff] = float(mean_val)
+                            except Exception:
+                                pass
+                        if std_val not in (None, ''):
+                            try:
+                                stds[handoff] = float(std_val)
+                            except Exception:
+                                pass
+                if means:
+                    model_res['drift_loop_ratio'] = {'mean': means, 'std': stds}
+
             # Ignore other tables (e.g., sample images) for this loader
         except Exception as e:
             print(f"Warning: failed processing W&B table '{key}' ({table_path}): {e}")
@@ -1687,6 +1914,7 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
     all_jacobian_eigvals = defaultdict(list)
     all_jacobian_trajs = defaultdict(lambda: defaultdict(list))
     all_global_diags = defaultdict(list)
+    all_drift_loop_ratios = defaultdict(list)
 
     # --- Loop over prompts to collect data ---
     print(f"\nAnalyzing model over {len(prompts)} prompts...")
@@ -1751,6 +1979,16 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                     token_label = f"pos_{token_idx}"
                 suffix = " (PCA space)" if use_pca_for_hd and transformed_reps_list_for_hd is not None else ""
                 print(f"Hausdorff (box-count) dim for token {token_idx} '{token_label}': {dim}{suffix}")
+
+        dlr_values = compute_drift_loop_ratios(
+            loop_reps,
+            model.config,
+            convergence_diagnostics=convergence_diagnostics
+        )
+        for handoff_key, ratio in dlr_values.items():
+            if ratio is None or not np.isfinite(ratio):
+                continue
+            all_drift_loop_ratios[handoff_key].append(float(ratio))
 
         if convergence_diagnostics:
             for group_key, metrics in convergence_diagnostics.items():
@@ -1874,6 +2112,44 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                 log_dict[f"{model_name}/hausdorff/{pos_key}_std"] = float(std_val)
             if log_dict:
                 wandb.log(log_dict)
+
+    dlr_table_path = None
+    dlr_plot_path = None
+    dlr_rows_for_table = []
+    if all_drift_loop_ratios:
+        dlr_means = {key: float(np.mean(values)) for key, values in all_drift_loop_ratios.items() if values}
+        dlr_stds = {key: float(np.std(values)) for key, values in all_drift_loop_ratios.items() if values}
+        results_for_comparison['drift_loop_ratio'] = {
+            'mean': dlr_means,
+            'std': dlr_stds
+        }
+
+        dlr_plot_path = plot_drift_loop_ratio_bar(dlr_means, dlr_stds, output_dir, model_name)
+
+        dlr_keys_sorted = sorted(set(list(dlr_means.keys()) + list(dlr_stds.keys())))
+        tables_dir = os.path.join(output_dir, "tables")
+        os.makedirs(tables_dir, exist_ok=True)
+        dlr_table_path = os.path.join(tables_dir, "drift_loop_ratio.csv")
+        with open(dlr_table_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["handoff", "mean", "std"])
+            for key in dlr_keys_sorted:
+                mean_val = dlr_means.get(key)
+                std_val = dlr_stds.get(key)
+                writer.writerow([key, "" if mean_val is None else mean_val, "" if std_val is None else std_val])
+                dlr_rows_for_table.append([key, mean_val, std_val])
+        print(f"Drift-to-loop ratio table saved to {dlr_table_path}")
+
+        if wandb_logging_enabled and (dlr_means or dlr_stds):
+            dlr_log = {}
+            for key, mean_val in dlr_means.items():
+                dlr_log[f"{model_name}/dlr/{key}_mean"] = mean_val
+            for key, std_val in dlr_stds.items():
+                dlr_log[f"{model_name}/dlr/{key}_std"] = std_val
+            if dlr_plot_path and os.path.exists(dlr_plot_path):
+                dlr_log[f"{model_name}/dlr/plot"] = wandb.Image(dlr_plot_path)
+            if dlr_log:
+                wandb.log(dlr_log)
     
     def aggregate_diagnostic_data(all_data_by_key):
         agg_results = {}
@@ -1998,7 +2274,6 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                             idx = min(30, len(series['mean']) - 1)
                             log_dict[f"{model_name}/loop30/{group_key}/{metric_key}"] = float(series['mean'][idx])
                     # save full series as CSV
-                    import csv
                     csv_path = os.path.join(csv_output_dir, f"convergence_{group_key}.csv")
                     keys = sorted(metrics.keys())
                     # compute max length across metrics
@@ -2022,7 +2297,6 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
 
             # Global diagnostics
             if args.track_global_diagnostics and 'global_diagnostics' in results_for_comparison:
-                import csv
                 g = results_for_comparison['global_diagnostics']
                 csv_path = os.path.join(csv_output_dir, f"global_diagnostics.csv")
                 keys = sorted(g.keys())
@@ -2043,6 +2317,12 @@ def analyze_single_model(checkpoint_path, output_dir, model_name, args, config_o
                     log_dict[f"{model_name}/tables/global_diagnostics"] = wandb.Table(data=rows_for_table, columns=header)
                 except Exception as te:
                     print(f"Warning: failed creating WandB Table for global diagnostics: {te}")
+
+            if dlr_rows_for_table:
+                try:
+                    log_dict[f"{model_name}/tables/drift_loop_ratio"] = wandb.Table(data=dlr_rows_for_table, columns=["handoff", "mean", "std"])
+                except Exception as te:
+                    print(f"Warning: failed creating WandB Table for drift-loop ratio: {te}")
 
             if log_dict:
                 wandb.log(log_dict)
@@ -2233,6 +2513,14 @@ def main():
                 plot_aggregated_convergence_diagnostics(
                     res['convergence_diagnostics'], aggregated_output_dir, model_name
                 )
+            if 'drift_loop_ratio' in res and res['drift_loop_ratio'].get('mean'):
+                print(f"\nPlotting drift-to-loop ratios for {model_name}...")
+                plot_drift_loop_ratio_bar(
+                    res['drift_loop_ratio'].get('mean', {}),
+                    res['drift_loop_ratio'].get('std', {}),
+                    aggregated_output_dir,
+                    model_name
+                )
 
     # --- Comparison Plotting ---
     if len(all_models_results) > 1:
@@ -2250,6 +2538,9 @@ def main():
         if args.plot_singular_values and not args.only_loop30_metrics:
             fp = plot_comparison_singular_values(all_models_results, comparison_output_dir)
             if fp: comparison_plots_paths['comparison_singular_values'] = fp
+        if not args.only_loop30_metrics:
+            fp = plot_comparison_drift_loop_ratio(all_models_results, comparison_output_dir)
+            if fp: comparison_plots_paths['comparison_drift_loop_ratio'] = fp
         if args.track_convergence_diagnostics and not args.only_loop30_metrics:
             paths = plot_comparison_convergence_diagnostics(all_models_results, comparison_output_dir)
             comparison_plots_paths.update(paths)
