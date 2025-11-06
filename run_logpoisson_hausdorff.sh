@@ -26,7 +26,7 @@ GPT2_CFG="$PROJECT_ROOT/config/train_gpt2_looped.py"
 ANALYZE_PY="$PROJECT_ROOT/analyze_loop_representations.py"
 
 # Output directories
-EXP_NAME="logpoisson_hd"
+EXP_NAME="logpoisson_hd_new"
 # train.py forces out_dir to 'out_looped' when use_baseline_model=False
 OUT_DIR="$PROJECT_ROOT/out_looped"
 ANALYSIS_DIR="$OUT_DIR/analysis"
